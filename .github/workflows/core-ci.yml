@@ -1,0 +1,68 @@
+name: core-ci
+
+# Builds and tests this engine on BOTH platforms it targets:
+#   - Linux x86_64  (the perf machine — the important one to keep green)
+#   - macOS arm64   (the dev machine)
+#
+# The whole point: while only the Mac is available, this catches Linux-only
+# breakage (missing headers, #ifdef mistakes, GCC-vs-Clang differences) on
+# every push, so nothing is a surprise later.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest    # Linux x86_64
+            name: linux-x86_64
+          - os: macos-14         # macOS arm64 (Apple Silicon)
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libgtest-dev
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja googletest
+
+      # CI builds are portable (HFT_NATIVE=OFF): the runner CPU is not the dev
+      # machine, and -march=native could emit instructions the runner lacks or
+      # simply produce numbers that mean nothing. CI proves it BUILDS and PASSES
+      # TESTS everywhere; real perf numbers come from the Linux box.
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DHFT_NATIVE=OFF
+          -DHFT_BUILD_BENCH=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # Debug build with ASan/UBSan on Linux catches memory + UB bugs that a
+      # release build silently tolerates. This is the cheap safety net for a
+      # low-level engine.
+      - name: Sanitizer build + test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DHFT_NATIVE=OFF
+          cmake --build build-asan -j
+          ctest --test-dir build-asan --output-on-failure

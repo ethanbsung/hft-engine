@@ -1,0 +1,367 @@
+<title>hft_core — Architecture</title>
+<style>
+  :root {
+    --paper: #f6f7f5;
+    --panel: #ffffff;
+    --ink: #14181f;
+    --muted: #5b6570;
+    --faint: #8b939c;
+    --line: #e2e5e1;
+    --line-strong: #cfd4ce;
+    --accent: #1f7a4d;      /* "measured / verified" green — the one accent */
+    --accent-soft: #e4f0e8;
+    --hot: #b8532b;         /* semantic: hot path */
+    --hot-soft: #f6e6de;
+    --cold: #3d6b8e;        /* semantic: I/O + cold path */
+    --cold-soft: #e2ebf1;
+    --code-bg: #f0f2ef;
+    --shadow: 0 1px 2px rgba(20,24,31,.04), 0 8px 24px -12px rgba(20,24,31,.12);
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", "Menlo", "Consolas", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0f1216; --panel: #171b21; --ink: #e6e9ec; --muted: #99a2ac;
+      --faint: #6c757e; --line: #262b32; --line-strong: #333a43;
+      --accent: #45c07e; --accent-soft: #172b20;
+      --hot: #e07a52; --hot-soft: #2c1c15; --cold: #6ba3cd; --cold-soft: #16222c;
+      --code-bg: #1c2128; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px -16px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="light"] {
+    --paper: #f6f7f5; --panel: #ffffff; --ink: #14181f; --muted: #5b6570;
+    --faint: #8b939c; --line: #e2e5e1; --line-strong: #cfd4ce; --accent: #1f7a4d;
+    --accent-soft: #e4f0e8; --hot: #b8532b; --hot-soft: #f6e6de; --cold: #3d6b8e;
+    --cold-soft: #e2ebf1; --code-bg: #f0f2ef;
+    --shadow: 0 1px 2px rgba(20,24,31,.04), 0 8px 24px -12px rgba(20,24,31,.12);
+  }
+  :root[data-theme="dark"] {
+    --paper: #0f1216; --panel: #171b21; --ink: #e6e9ec; --muted: #99a2ac;
+    --faint: #6c757e; --line: #262b32; --line-strong: #333a43; --accent: #45c07e;
+    --accent-soft: #172b20; --hot: #e07a52; --hot-soft: #2c1c15; --cold: #6ba3cd;
+    --cold-soft: #16222c; --code-bg: #1c2128;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px -16px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--sans); line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* ---- masthead ---- */
+  header.mast {
+    padding: 56px 0 32px; border-bottom: 1px solid var(--line);
+    margin-bottom: 48px;
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--accent); font-weight: 600;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  h1 {
+    font-family: var(--mono); font-size: clamp(30px, 5vw, 46px);
+    letter-spacing: -.02em; line-height: 1.05; margin: 18px 0 12px;
+    text-wrap: balance; font-weight: 650;
+  }
+  .lede {
+    font-size: 18px; color: var(--muted); max-width: 60ch; margin: 0;
+  }
+  .mast-meta {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px;
+  }
+  .chip {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .02em;
+    padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 4px;
+    color: var(--muted); background: var(--panel);
+  }
+  .chip b { color: var(--ink); font-weight: 600; }
+
+  /* ---- sections ---- */
+  section { margin: 56px 0; }
+  h2 {
+    font-family: var(--mono); font-size: 13px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--faint); font-weight: 600;
+    margin: 0 0 20px; padding-bottom: 10px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  h2 .n { color: var(--accent); }
+  h3 { font-size: 20px; letter-spacing: -.01em; margin: 0 0 8px; }
+  p { max-width: 66ch; }
+  p.tight { margin: 8px 0; }
+  strong { font-weight: 650; }
+  .accent-word { color: var(--accent); font-weight: 600; }
+
+  /* ---- callout ---- */
+  .insight {
+    background: var(--panel); border: 1px solid var(--line);
+    border-left: 3px solid var(--accent); border-radius: 8px;
+    padding: 22px 24px; box-shadow: var(--shadow); margin: 24px 0;
+  }
+  .insight .k {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--accent); font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .insight blockquote {
+    margin: 0 0 14px; font-size: 17px; font-weight: 550; color: var(--ink);
+    border-left: none; padding: 0;
+  }
+  .insight p:last-child { margin-bottom: 0; }
+
+  /* ---- pipeline diagram ---- */
+  .pipe { display: grid; gap: 0; margin: 28px 0; }
+  .stage {
+    position: relative; display: grid;
+    grid-template-columns: 92px 1fr; gap: 20px; align-items: stretch;
+  }
+  .rail {
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .dot {
+    width: 15px; height: 15px; border-radius: 50%; margin-top: 22px;
+    border: 3px solid var(--paper); flex: none; z-index: 1;
+  }
+  .line-seg { width: 2px; flex: 1; background: var(--line-strong); min-height: 18px; }
+  .stage:last-child .line-seg { display: none; }
+  .tag {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+    text-transform: uppercase; margin-top: 8px; text-align: center;
+    color: var(--faint); font-weight: 600; line-height: 1.3;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 16px 18px; margin-bottom: 14px;
+    box-shadow: var(--shadow);
+  }
+  .card .h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .card .h .name { font-family: var(--mono); font-weight: 650; font-size: 15px; }
+  .card .h .flow {
+    font-family: var(--mono); font-size: 11px; color: var(--faint);
+    margin-left: auto;
+  }
+  .card .desc { font-size: 14px; color: var(--muted); margin: 8px 0 0; max-width: none; }
+  .pill {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+    text-transform: uppercase; padding: 2px 8px; border-radius: 20px; font-weight: 600;
+  }
+  .pill.hot  { background: var(--hot-soft);  color: var(--hot); }
+  .pill.cold { background: var(--cold-soft); color: var(--cold); }
+  .pill.io   { background: var(--cold-soft); color: var(--cold); }
+  .pill.core { background: var(--accent-soft); color: var(--accent); }
+  .dot.hot  { background: var(--hot); }
+  .dot.core { background: var(--accent); }
+  .dot.io   { background: var(--cold); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 8px 0 20px; }
+  .legend span {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    display: flex; align-items: center; gap: 7px;
+  }
+  .legend i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+
+  /* ---- decision table ---- */
+  .table-scroll { overflow-x: auto; margin: 8px 0; border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 460px; }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint); font-weight: 600;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.k { font-weight: 600; white-space: nowrap; }
+  td .why { color: var(--muted); font-size: 13px; display: block; margin-top: 3px; }
+  code {
+    font-family: var(--mono); font-size: .88em; background: var(--code-bg);
+    padding: 1px 5px; border-radius: 4px; color: var(--ink);
+  }
+
+  /* ---- module grid ---- */
+  .mods { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .mod {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .mod .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .mod .mname { font-family: var(--mono); font-weight: 650; font-size: 14px; }
+  .mod .file { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+  .status {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .04em; font-weight: 600;
+    padding: 2px 7px; border-radius: 4px; white-space: nowrap; text-transform: uppercase;
+  }
+  .status.done { background: var(--accent-soft); color: var(--accent); }
+  .status.wip  { background: var(--hot-soft);  color: var(--hot); }
+  .status.todo { background: var(--code-bg);   color: var(--faint); }
+  .status.defer{ background: var(--cold-soft); color: var(--cold); }
+
+  /* ---- phase split ---- */
+  .phases { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .phase {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px 22px; box-shadow: var(--shadow);
+  }
+  .phase.p2 { border-style: dashed; background: transparent; }
+  .phase .plabel {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; font-weight: 600; margin-bottom: 4px;
+  }
+  .phase.p1 .plabel { color: var(--accent); }
+  .phase.p2 .plabel { color: var(--cold); }
+  .phase h3 { font-size: 17px; margin-bottom: 10px; }
+  .phase ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+  .phase li { margin: 5px 0; }
+
+  footer {
+    margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 12px; color: var(--faint);
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  }
+  @media (max-width: 560px) {
+    .phases { grid-template-columns: 1fr; }
+    .stage { grid-template-columns: 64px 1fr; gap: 14px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="eyebrow">System Architecture · Reference</div>
+    <h1>hft_core</h1>
+    <p class="lede">A from-scratch, production-<em>shaped</em> HFT engine built as a learning vehicle — the reference you return to before implementing each module.</p>
+    <div class="mast-meta">
+      <span class="chip"><b>branch</b> rewrite</span>
+      <span class="chip"><b>feed</b> Coinbase L2 WebSocket</span>
+      <span class="chip"><b>dev</b> macOS · <b>measure</b> Linux</span>
+      <span class="chip"><b>phase 1</b> full loop → simulated fills</span>
+    </div>
+  </header>
+
+  <section>
+    <h2><span class="n">01</span> The insight that sets every priority</h2>
+    <p>Crypto exchange round-trip latency is <strong>milliseconds (≈5–10&nbsp;ms)</strong>, not microseconds — the feed arrives over TCP from a cloud endpoint. Shaving your own code from 50&nbsp;µs to 10&nbsp;µs is <strong>invisible</strong> against a 5,000&nbsp;µs exchange floor. That doesn't mean "don't build for low latency." It means the project has two clean goals, and we stay honest about which is which.</p>
+    <div class="insight">
+      <div class="k">Two goals, mutually reinforcing</div>
+      <blockquote><span class="accent-word">Nanosecond craft</span> — ring buffers, order book, cache discipline, lock-free hand-offs, real latency measurement — is the <em>learning goal</em>, built to production standard because that's the point.</blockquote>
+      <p><strong>What actually determines crypto PnL</strong> is <span class="accent-word">correctness of order-book state</span> — above all <strong>sequence-gap detection &amp; recovery</strong>. Crypto feeds drop messages <em>without disconnecting</em>: the sequence ticks forward, the stream stays live, but you silently missed an update and your book is now wrong. That's a first-class module, not a footnote.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">02</span> Threading — one hot thread, offload the cold path</h2>
+    <p class="tight">Crossing cores costs a cache-coherency round-trip (<strong>~40–100&nbsp;ns per hop</strong>, plus jitter). Thread-per-stage is a <em>throughput</em> optimization that <em>raises</em> per-message latency — the opposite of what the critical path wants. So the hot path is <strong>a single thread</strong> running <code>parse → book → strategy → risk → sim</code> as plain function calls. Threads appear only where work <em>can't</em> share the hot thread: blocking I/O and slow/cold work, connected by lock-free SPSC ring buffers.</p>
+
+    <div class="legend">
+      <span><i style="background:var(--hot)"></i> hot path — one thread</span>
+      <span><i style="background:var(--cold)"></i> I/O — isolated, blocking</span>
+      <span><i style="background:var(--accent)"></i> agnostic core</span>
+    </div>
+
+    <div class="pipe">
+      <div class="stage">
+        <div class="rail"><span class="dot io"></span><span class="line-seg"></span><span class="tag">reader<br>thread</span></div>
+        <div><div class="card"><div class="h"><span class="name">Socket Reader</span><span class="pill io">I/O</span><span class="flow">bytes → recv_ts</span></div><p class="desc">Reads the WebSocket, stamps <code>recv_ts</code> at receipt, pushes raw frames into the hot ring. Blocking I/O is isolated here so the hot thread never touches a syscall.</p></div></div>
+      </div>
+      <div class="stage">
+        <div class="rail"><span class="dot hot"></span><span class="line-seg"></span><span class="tag">hot<br>thread</span></div>
+        <div><div class="card"><div class="h"><span class="name">Feed Handler</span><span class="pill hot">HOT</span><span class="flow">JSON → BookDelta</span></div><p class="desc">The only component that knows Coinbase's wire format. Normalizes to <code>BookDelta</code> <em>and</em> checks sequence numbers — a gap signals "discard &amp; re-snapshot."</p></div></div>
+      </div>
+      <div class="stage">
+        <div class="rail"><span class="dot hot"></span><span class="line-seg"></span><span class="tag">hot<br>thread</span></div>
+        <div><div class="card"><div class="h"><span class="name">Order Book</span><span class="pill hot">HOT</span><span class="flow">deltas → top of book</span></div><p class="desc">Price-keyed book state per symbol; <code>new_qty</code> is absolute resting size. Hottest read is best-bid / best-ask. Instrument-agnostic by construction.</p></div></div>
+      </div>
+      <div class="stage">
+        <div class="rail"><span class="dot hot"></span><span class="line-seg"></span><span class="tag">hot<br>thread</span></div>
+        <div><div class="card"><div class="h"><span class="name">Strategy</span><span class="pill hot">HOT</span><span class="flow">book → desired quotes</span></div><p class="desc">Basic market maker: quote around mid, skew on inventory, requote with hysteresis. Reads book + position, emits a desired quote.</p></div></div>
+      </div>
+      <div class="stage">
+        <div class="rail"><span class="dot hot"></span><span class="line-seg"></span><span class="tag">hot<br>thread</span></div>
+        <div><div class="card"><div class="h"><span class="name">Risk</span><span class="pill hot">HOT</span><span class="flow">order → accept / reject</span></div><p class="desc">The gate every order passes: position limits, price reasonability, size cap, token-bucket rate limit. Fails closed on an invalid book.</p></div></div>
+      </div>
+      <div class="stage">
+        <div class="rail"><span class="dot hot"></span><span class="tag">hot<br>thread</span></div>
+        <div><div class="card"><div class="h"><span class="name">Execution Simulator</span><span class="pill hot">HOT</span><span class="flow">order → fill · PnL</span></div><p class="desc">Phase-1 stand-in for the exchange: fills when the market trades through your price, applies fees, tracks position + PnL. Implements the <em>same interface</em> the live gateway will.</p></div></div>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="k">Why the cold path gets the queue and the hot path doesn't</div>
+      <p style="margin:0">Ring buffers (SPSC, lock-free, cache-line padded) connect <strong>I/O↔hot</strong> and <strong>hot↔cold</strong> — reader→hot, hot→sender, hot→logger, feed→recovery. That's where you build and learn the lock-free primitive, because that's where it belongs. You do <em>not</em> sprinkle queues between hot stages, where they'd only add latency. Being able to explain this is the interview payoff.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">03</span> Agnostic core, venue-specific edges</h2>
+    <p>The normalized <code>BookDelta</code> is already venue-neutral — <code>SymbolId</code>, integer-tick <code>price_t</code>, <code>qty_t</code>, <code>Side</code>. The feed handler is the <em>only</em> thing that knows Coinbase; swap in a CME feed handler that emits the same <code>BookDelta</code> and the entire core is unchanged. <code>SymbolTable</code> already carries per-symbol tick / lot / scale — the exact generalization point. <strong>Don't build "a crypto system." Build a trading core with a crypto adapter bolted on.</strong></p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Decision</th><th>Choice</th></tr></thead>
+        <tbody>
+          <tr><td class="k">North star</td><td>Learning vehicle, production-shaped<span class="why">Correct, measured, honestly scoped — defensible in an HFT interview.</span></td></tr>
+          <tr><td class="k">Threading</td><td>Single hot thread; SPSC rings offload cold / blocking work<span class="why">Fewer cross-core hops = lower latency &amp; less jitter on the critical path.</span></td></tr>
+          <tr><td class="k">Generality</td><td>Instrument-agnostic core; crypto-specific feed &amp; gateway<span class="why">Nearly free given <code>BookDelta</code>; far more credible and portable.</span></td></tr>
+          <tr><td class="k">Realism</td><td>Phase 1 portable + measured; kernel-bypass simulated &amp; documented in Phase 2<span class="why">Co-lo / DPDK / FPGA save single-digit µs — theater on a 5–10&nbsp;ms feed.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">04</span> Realism &amp; phasing</h2>
+    <div class="phases">
+      <div class="phase p1">
+        <div class="plabel">Phase 1 · ship it</div>
+        <h3>Get it running — the resume artifact</h3>
+        <ul>
+          <li>Single hot thread; agnostic core</li>
+          <li>Real order book <strong>with sequence-gap recovery</strong></li>
+          <li>Real latency taps (<code>platform::now_ns()</code>)</li>
+          <li>Core pinning where the OS allows (Linux)</li>
+          <li>Cache-line discipline in the ring buffer</li>
+          <li>Full loop → <strong>simulated fills</strong> + PnL</li>
+        </ul>
+      </div>
+      <div class="phase p2">
+        <div class="plabel">Phase 2 · pure upside</div>
+        <h3>"I understand the real stack"</h3>
+        <ul>
+          <li>Mock UDP multicast feed on localhost</li>
+          <li>Busy-polled, hardware-timestamped</li>
+          <li>Measured against the WebSocket path</li>
+          <li>Write-up: where kernel bypass <em>would</em> and <em>wouldn't</em> help — and why not here</li>
+        </ul>
+      </div>
+    </div>
+    <p style="margin-top:18px"><strong>Why phase it this way:</strong> knowing why <em>not</em> to use something, and proving you understand it, is a stronger signal than a half-broken DPDK integration. Resume line — <em>"characterized the latency budget and documented where kernel-bypass would and wouldn't help."</em></p>
+  </section>
+
+  <section>
+    <h2><span class="n">05</span> Modules</h2>
+    <div class="mods">
+      <div class="mod"><div class="top"><span class="mname">Types</span><span class="status done">started</span></div><span class="file">types.hpp</span></div>
+      <div class="mod"><div class="top"><span class="mname">Feed Handler</span><span class="status wip">wip</span></div><span class="file">feed_handler.*</span></div>
+      <div class="mod"><div class="top"><span class="mname">Ring Buffer</span><span class="status todo">todo</span></div><span class="file">ring_buffer.hpp</span></div>
+      <div class="mod"><div class="top"><span class="mname">Order Book</span><span class="status todo">todo</span></div><span class="file">order_book.hpp</span></div>
+      <div class="mod"><div class="top"><span class="mname">Strategy</span><span class="status todo">todo</span></div><span class="file">strategy.hpp</span></div>
+      <div class="mod"><div class="top"><span class="mname">Risk</span><span class="status todo">todo</span></div><span class="file">risk.hpp</span></div>
+      <div class="mod"><div class="top"><span class="mname">Exec Simulator</span><span class="status todo">todo</span></div><span class="file">execution_simulator.hpp</span></div>
+      <div class="mod"><div class="top"><span class="mname">Order Gateway</span><span class="status defer">phase 1.5</span></div><span class="file">order_gateway.hpp</span></div>
+      <div class="mod"><div class="top"><span class="mname">Latency Harness</span><span class="status todo">todo</span></div><span class="file">latency.hpp</span></div>
+      <div class="mod"><div class="top"><span class="mname">Threading</span><span class="status todo">todo</span></div><span class="file">main.cpp / runner</span></div>
+    </div>
+    <p style="margin-top:20px; color:var(--muted); font-size:14px">Each module has its own reference in <code>core/docs/&lt;module&gt;.md</code> — responsibility, interface contract, data-structure notes, latency notes, and a "done" checklist. This page is the map; the markdown is the territory.</p>
+  </section>
+
+  <footer>
+    <span>hft_core · architecture reference</span>
+    <span>develop on macOS — measure on Linux</span>
+  </footer>
+
+</div>
