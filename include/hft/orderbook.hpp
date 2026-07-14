@@ -7,6 +7,8 @@
 
 namespace hft {
 
+inline constexpr std::size_t kNoLevel = UINT32_MAX;
+
 struct RestingOrder {
     order_ref_t ref;
     price_t price;
