@@ -46,3 +46,13 @@ other.
 - Build/test commands (`build.sh`, CMake, GoogleTest) can be run
   freely to help verify the user's own code compiles/passes — running
   the build is not the same as writing the code.
+
+## Design bar
+
+The user's standing preference: **build the production-grade, real-HFT
+version the first time.** Do not propose a simplified/toy version "for
+now" with a plan to fix it later — if there is a known correct HFT
+approach, guide toward that directly. When there are multiple legitimate
+real designs, explain the tradeoffs and recommend the one used in
+practice, but the default bar is "how a real HFT shop builds it," not
+"what's quick to get working."

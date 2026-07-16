@@ -1,8 +1,12 @@
 #include "hft/ref_index.hpp"
+#include <cassert>
 
 namespace hft {
 
-RefIndex::RefIndex(std::size_t capacity_pow2) : slots_(capacity_pow2, Slot{0, 0}), mask_(capacity_pow2 - 1) {}
+RefIndex::RefIndex(std::size_t capacity_pow2) : slots_(capacity_pow2, Slot{0, 0}), mask_(capacity_pow2 - 1) {
+    assert(capacity_pow2 != 0 && (capacity_pow2 & (capacity_pow2 - 1)) == 0
+       && "capacity must be a non-zero power of two");
+}
 
 void RefIndex::insert(order_ref_t ref, uint32_t idx) noexcept {
     std::size_t i = mix(ref) & mask_;

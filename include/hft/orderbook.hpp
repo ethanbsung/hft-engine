@@ -8,20 +8,21 @@
 namespace hft {
 
 inline constexpr std::size_t kNoLevel = UINT32_MAX;
+inline constexpr price_t kInvalidPrice = INT64_MIN;
 
 struct RestingOrder {
-    order_ref_t ref;
     price_t price;
     qty_t shares;
-    Side side;
     uint32_t prev_idx;
     uint32_t next_idx;
+    order_ref_t ref;
+    Side side;
 };
 
 struct Level {
+    qty_t total_qty = 0;
     uint32_t head_idx = kNullIdx;
     uint32_t tail_idx = kNullIdx;
-    qty_t total_qty = 0;
     uint32_t order_count = 0;
 };
 
@@ -44,15 +45,23 @@ private:
     uint32_t alloc_slot() noexcept;
     void free_slot(uint32_t) noexcept;
     std::size_t index_of(price_t) const noexcept;
+    void recenter(price_t new_center) noexcept;
+
     SymbolId symbol_;
     price_t base_price_;
     std::vector<RestingOrder> pool_;
     uint32_t free_head_ = kNullIdx;
+    uint64_t recenters_ = 0;
+    uint64_t far_orders_ = 0;
+    uint32_t ring_origin_ = 0;
+    std::size_t mask_;
     
     std::vector<Level> bid_levels_;
     std::vector<Level> ask_levels_;
-    std::size_t best_bid_idx_;
-    std::size_t best_ask_idx_;
+    uint64_t bid_summary_ = 0;
+    uint64_t bid_bits_[64] = {};
+    uint64_t ask_summary_ = 0;
+    uint64_t ask_bits_[64] = {};
 
     RefIndex ref_index_;
 };

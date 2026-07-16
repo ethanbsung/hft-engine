@@ -12,3 +12,5 @@ dead/tests/fixtures/
 *.NASDAQ_ITCH50
 *.NASDAQ_ITCH50.gz
 *.itch
+
+.vscode
