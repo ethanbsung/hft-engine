@@ -7,16 +7,16 @@
 
 namespace hft {
 
-inline constexpr std::size_t kNoLevel = UINT32_MAX;
+inline constexpr uint32_t kNoLevel = UINT32_MAX;
 inline constexpr price_t kInvalidPrice = INT64_MIN;
 
 struct RestingOrder {
-    price_t price;
-    qty_t shares;
-    uint32_t prev_idx;
-    uint32_t next_idx;
-    order_ref_t ref;
-    Side side;
+    price_t price = 0;
+    qty_t shares = 0;
+    uint32_t prev_idx = kNullIdx;
+    uint32_t next_idx = kNullIdx;
+    order_ref_t ref = 0;
+    Side side = Side::Buy;
 };
 
 struct Level {
@@ -36,15 +36,16 @@ public:
     void delete_order(order_ref_t ref) noexcept;                   // D: remove
     void replace_order(order_ref_t old_ref, order_ref_t new_ref,
                        price_t price, qty_t shares) noexcept; // U
-
+    void remove_at_slot(uint32_t slot);
     price_t best_bid() const noexcept;
     price_t best_ask() const noexcept;
     qty_t qty_at(Side side, price_t price) const noexcept;
 
 private:
+    void reduce(order_ref_t ref, qty_t shares) noexcept;
     uint32_t alloc_slot() noexcept;
     void free_slot(uint32_t) noexcept;
-    std::size_t index_of(price_t) const noexcept;
+    uint32_t index_of(price_t) const noexcept;
     void recenter(price_t new_center) noexcept;
 
     SymbolId symbol_;
@@ -53,9 +54,10 @@ private:
     uint32_t free_head_ = kNullIdx;
     uint64_t recenters_ = 0;
     uint64_t far_orders_ = 0;
+    uint64_t pool_full_drops_ = 0;
     uint32_t ring_origin_ = 0;
+    uint64_t not_found_ = 0;
     std::size_t mask_;
-    
     std::vector<Level> bid_levels_;
     std::vector<Level> ask_levels_;
     uint64_t bid_summary_ = 0;

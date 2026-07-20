@@ -37,6 +37,25 @@ Consequences that shape everything below:
 - `U` is **not** an in-place update: old ref dies, new ref is born, and
   the new order **loses time priority**.
 
+### `ref == 0` is reserved — never route Trade (P) into the book
+Only `A`/`F` (and `U`'s *new* ref) introduce a ref; all are **live,
+day-unique, non-zero** tracking IDs, assigned roughly monotonically.
+
+**Message `P` (Trade Non-Cross) carries Order Reference Number = 0** by
+spec — it is the execution broadcast for a *hidden* (non-displayed) order,
+zeroed to preserve anonymity (confirmed for all `P` messages since
+2010-12-06). `P` is a **trade print, not an order-lifecycle event**: it
+never creates, modifies, or deletes a resting order, so it **must not be
+routed to `OrderBook`** — it belongs to the trade tape / analytics path,
+not `add_order`/`execute_order`/etc.
+
+`RefIndex` uses **0 as its empty-slot sentinel**, so 0 is an illegal key.
+This is safe *because* no book event ever carries ref 0. `RefIndex::insert`
+**asserts `ref != 0`** (debug builds) as a tripwire: if it ever fires, a
+`P` (or a mis-parsed message) is being wrongly fed into the book — a
+feed-handler routing bug, caught at the source instead of as silent
+corruption later.
+
 ## Data structure — the committed design
 
 This book is built to the HFT-grade design from the start (per the repo's
@@ -205,8 +224,8 @@ factor, layout), not to decide whether to move off a `std::map` baseline.
 - [x] Order pool + LIFO free list (`alloc_slot` / `free_slot`)
 - [x] `ref_index_` (open-addressed `ref → slot`)
 - [x] `index_of` (ring offset→slot, far-order detection)
-- [ ] `add_order` (A/F): alloc, fill, tail-link (FIFO), ref-index insert,
-      set touch bit; recenter/far-order paths
+- [x] `add_order` (A/F): alloc, fill, tail-link (FIFO), ref-index insert,
+      set touch bit; far-order path done. (recenter trigger still TODO)
 - [ ] `delete_order` (D): unlink, level decrement, free slot, ref-index
       erase, clear touch bit on empty
 - [ ] `execute_order` (E/C), `cancel_order` (X): reduce shares; remove when
@@ -221,4 +240,3 @@ factor, layout), not to decide whether to move off a `std::map` baseline.
       day `S` message
 - [ ] Benchmark apply + best query (Linux, pinned)
 - [ ] (Later) per-level queue-position view for the execution simulator
-```

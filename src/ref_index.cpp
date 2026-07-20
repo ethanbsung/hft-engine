@@ -8,18 +8,6 @@ RefIndex::RefIndex(std::size_t capacity_pow2) : slots_(capacity_pow2, Slot{0, 0}
        && "capacity must be a non-zero power of two");
 }
 
-void RefIndex::insert(order_ref_t ref, uint32_t idx) noexcept {
-    std::size_t i = mix(ref) & mask_;
-    while (true) {
-        if (slots_[i].ref == 0) {
-            slots_[i].ref = ref;
-            slots_[i].idx = idx;
-            return;
-        }
-        i = (i + 1) & mask_;
-    }
-}
-
 uint32_t RefIndex::find(order_ref_t ref) const noexcept {
     std::size_t i = mix(ref) & mask_;
     while (true) {
@@ -30,6 +18,21 @@ uint32_t RefIndex::find(order_ref_t ref) const noexcept {
         }
         i = (i + 1) & mask_;
     }
+}
+
+void RefIndex::insert(order_ref_t ref, uint32_t idx) noexcept {
+    assert(ref != 0 && "ref 0 collides with empty-slot sentinel — is a Trade(P) msg being routed to the book?");
+    assert(find(ref) == kNullIdx && "duplicate ref insert");
+    std::size_t i = mix(ref) & mask_;
+    for (std::size_t n = 0; n <= mask_; ++n) {
+        if (slots_[i].ref == 0) {
+            slots_[i].ref = ref;
+            slots_[i].idx = idx;
+            return;
+        }
+        i = (i + 1) & mask_;
+    }
+    assert(false && "ref_index full - probe wrapped");
 }
 
 void RefIndex::erase(order_ref_t ref) noexcept {
