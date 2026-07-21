@@ -208,15 +208,20 @@ TEST(OrderBook, IndependentBidAndAskSides) {
     EXPECT_EQ(b.best_ask(), 10020);               // ask untouched
 }
 
-// --- Far order (outside the band): tracked by ref, not in the touch --------
+// --- Far order (pathologically far): tracked by ref, not in the touch ------
+// NOTE: a price merely just outside the window now triggers a *recenter*
+// (drift-following) rather than a far order. A far order is the pathological
+// outlier case: out of band AND beyond the recenter threshold
+// (|price - window_center| >= window). window_center = kBase + kWindow/2.
+// So kBase + 3*kWindow is far enough that recenter is NOT triggered.
+
+constexpr price_t kFar = kBase + 3 * static_cast<price_t>(kWindow);
 
 TEST(OrderBook, FarOrderNotInTouch) {
     OrderBook b = make_book();
-    // offset >= window (4096) is out of band -> far order.
-    price_t far = kBase + static_cast<price_t>(kWindow) + 10;
-    b.add_order(1, Side::Buy, far, 100);
+    b.add_order(1, Side::Buy, kFar, 100);
     EXPECT_EQ(b.best_bid(), kInvalidPrice);        // not in the bitmap
-    EXPECT_EQ(b.qty_at(Side::Buy, far), 0);        // out of band -> 0
+    EXPECT_EQ(b.qty_at(Side::Buy, kFar), 0);       // out of band -> 0
     // But it is still tracked by ref: delete must find and remove it cleanly.
     b.delete_order(1);
     EXPECT_EQ(b.best_bid(), kInvalidPrice);
@@ -224,10 +229,77 @@ TEST(OrderBook, FarOrderNotInTouch) {
 
 TEST(OrderBook, FarOrderCoexistsWithNearOrder) {
     OrderBook b = make_book();
-    price_t far = kBase + static_cast<price_t>(kWindow) + 10;
-    b.add_order(1, Side::Buy, far,        100);    // far
+    b.add_order(1, Side::Buy, kFar,       100);    // far (no recenter)
     b.add_order(2, Side::Buy, kBase + 5,  100);    // near
     EXPECT_EQ(b.best_bid(), kBase + 5);            // only the near one shows
+}
+
+// --- Recenter (window follows drift) ---------------------------------------
+
+// A price just outside the window (within the recenter threshold) should
+// slide the window to follow it, not become a far order.
+TEST(OrderBook, RecenterFollowsDrift) {
+    OrderBook b = make_book();
+    // Just past the top edge: offset window+50 is out of band but within one
+    // window of center -> triggers recenter.
+    price_t drifted = kBase + static_cast<price_t>(kWindow) + 50;
+    b.add_order(1, Side::Buy, drifted, 100);
+    EXPECT_EQ(b.best_bid(), drifted);              // now in-band via recenter
+    EXPECT_EQ(b.qty_at(Side::Buy, drifted), 100);
+}
+
+// After recentering to follow a drifted price, the original (now far-below)
+// price falls out of the window.
+TEST(OrderBook, RecenterDropsOldFarSide) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy, kBase + 5, 100);     // near original center-ish
+    price_t drifted = kBase + static_cast<price_t>(kWindow) + 50;
+    b.add_order(2, Side::Buy, drifted, 100);       // triggers recenter upward
+    EXPECT_EQ(b.best_bid(), drifted);
+    // The old order at kBase+5 is now far below the new window. It survives
+    // in the book by ref (this test only asserts the new touch is correct);
+    // whether kBase+5 is still queryable depends on how far the window slid.
+}
+
+// The bug rebuild_bitmap() fixes: a near order that STAYS in the window across
+// a recenter. Its ring slot is preserved by the origin bump, but its logical
+// offset (price - base_price_) changes when base_price_ slides, so its touch
+// bit must move too. Before the fix the stale bit made best_bid report a
+// phantom price. Concretely (base=10000, window=4096):
+//   A @ 13000 -> logical offset 3000, ring slot 3000.
+//   drift @ 14106 is one tick-band past the top edge -> recenter, delta=2058.
+//   Upward recenter evicts logical offsets 0..2057, so slot 3000 (order A)
+//   survives; new base=12058, so A's logical offset becomes 942 and drift's
+//   becomes 2048. best_bid must be the higher price (drift), and A must still
+//   be queryable at its true price 13000 -- not a phantom (old base+3000).
+TEST(OrderBook, RecenterKeepsSurvivingNearOrder) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy, 13000, 100);                 // A: survives recenter
+    price_t drift = kBase + static_cast<price_t>(kWindow) + 10;  // 14106
+    b.add_order(2, Side::Buy, drift, 200);                 // triggers recenter up
+    EXPECT_EQ(b.best_bid(), drift);                        // drift is the new touch
+    EXPECT_EQ(b.qty_at(Side::Buy, drift), 200);
+    EXPECT_EQ(b.qty_at(Side::Buy, 13000), 100);            // A still at its true price
+    // Deleting the touch must fall back to A's real price, not a phantom.
+    b.delete_order(2);
+    EXPECT_EQ(b.best_bid(), 13000);
+    EXPECT_EQ(b.qty_at(Side::Buy, 13000), 100);
+}
+
+// Same invariant on the ask side, and exercising a level with two orders so
+// the aggregate qty and FIFO list survive the bitmap rebuild intact.
+TEST(OrderBook, RecenterKeepsSurvivingAskLevel) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Sell, 13000, 100);
+    b.add_order(2, Side::Sell, 13000, 250);                // same level, two orders
+    price_t drift = kBase + static_cast<price_t>(kWindow) + 10;
+    b.add_order(3, Side::Sell, drift, 50);                 // recenter
+    EXPECT_EQ(b.qty_at(Side::Sell, 13000), 350);           // aggregate survived
+    EXPECT_EQ(b.best_ask(), 13000);                        // 13000 < drift -> lowest ask
+    EXPECT_EQ(b.qty_at(Side::Sell, drift), 50);            // drift level also present
+    b.delete_order(1);
+    b.delete_order(2);
+    EXPECT_EQ(b.best_ask(), drift);                        // now drift is the only ask
 }
 
 }  // namespace

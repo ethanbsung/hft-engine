@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+When reporting information to me, be extremely concise and sacrifice grammar for the sake of concision.
+
 This repo (`hft-engine`) is a from-scratch, learning-focused HFT system,
 built to learn C++ and low-latency architecture end to end.
 
@@ -23,7 +25,7 @@ other.
 ## Ground rules for Claude
 
 - **Do not write implementation code for the user.** No filling in
-  `src/*.cpp`, no writing test bodies, no producing full functions or
+  `src/*.cpp`, no producing full functions or
   classes that solve the exercise. The user writes all the logic
   themselves — that's the point.
 - **Do help with:**

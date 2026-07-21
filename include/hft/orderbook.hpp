@@ -17,6 +17,7 @@ struct RestingOrder {
     uint32_t next_idx = kNullIdx;
     order_ref_t ref = 0;
     Side side = Side::Buy;
+    bool is_far = false;
 };
 
 struct Level {
@@ -47,6 +48,8 @@ private:
     void free_slot(uint32_t) noexcept;
     uint32_t index_of(price_t) const noexcept;
     void recenter(price_t new_center) noexcept;
+    void evict_level(Level& lvl) noexcept;
+    void rebuild_bitmap() noexcept;
 
     SymbolId symbol_;
     price_t base_price_;
@@ -57,6 +60,7 @@ private:
     uint64_t pool_full_drops_ = 0;
     uint32_t ring_origin_ = 0;
     uint64_t not_found_ = 0;
+    uint64_t evicted_ = 0;
     std::size_t mask_;
     std::vector<Level> bid_levels_;
     std::vector<Level> ask_levels_;

@@ -245,11 +245,25 @@ round-trip on the hot path, for no functional gain in a single-consumer
 design. The method-call seam is the same abstraction boundary without the
 data-shuffling cost.
 
-**When you'd add an `Event` type:** if multiple independent consumers need
-the same normalized stream (book + tape + recorder), or you want to
-decouple decode from apply across a queue/thread boundary. Then the
-normalization pays for itself. Know this tradeoff — it's a "when does
-abstraction cost too much" question.
+**The `BookDelta` history (the ITCH-vs-Coinbase part of the story):** an
+earlier iteration had a `BookDelta` struct as the feed's output — a
+**price-level (L2)** delta (`price`, `new_qty`), the natural shape for a
+Coinbase-style feed that hands you aggregated levels. Switching the feed to
+**Nasdaq ITCH (L3)** killed it: ITCH is order-by-order, so `AddOrder`
+carries an *order reference* and `OrderExecuted` says "order `ref` traded N
+shares" **without a price at all** — there is no price-level delta to emit,
+and `new_qty` is meaningless per-order. `BookDelta` was deleted rather than
+reshaped: with one venue, one thread, and one consumer, the normalized-event
+abstraction earned nothing, so the decoder calls the book directly. This is
+a *made-for-speed, single-venue* decision — it trades the venue-agnostic
+generality a normalized event would buy for the copy/dispatch it would cost.
+
+**When you'd add an `Event` type (or bring back a delta):** if multiple
+independent consumers need the same normalized stream (book + tape +
+recorder), if you want to decouple decode from apply across a queue/thread
+boundary, or if you re-add an **L2 venue** whose native shape *is* a
+price-level delta. Then the normalization pays for itself. Know this
+tradeoff — it's a "when does abstraction cost too much" question.
 
 ---
 

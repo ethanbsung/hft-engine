@@ -1,7 +1,7 @@
 # Module: Order Book
 
 **File(s):** `include/hft/orderbook.hpp`, `src/orderbook.cpp`
-**Phase:** 1 · **Status:** 🟨 in progress
+**Phase:** 1 · **Status:** 🟩 implemented (apply path + queries + re-centering complete; benchmarks pending)
 
 ## Responsibility
 Maintain the current state of the limit order book for each symbol, and
@@ -74,9 +74,29 @@ interchangeable (no ordering requirement). `free_head_` names the top of
 the free list; `kNullIdx` means exhausted.
 
 `RestingOrder` stores `price` and `side` **denormalized** onto the order
-itself. This is deliberate: `E`/`X`/`D`/`U` arrive with only a `ref`, so
-after the ref→slot lookup we must recover which level to touch — `price`
-and `side` on the order give us that in O(1) without a back-pointer.
+itself, alongside `shares`, the intrusive `prev_idx`/`next_idx` links, `ref`,
+and an `is_far` flag. This is deliberate: `E`/`X`/`D`/`U` arrive with only a
+`ref`, so after the ref→slot lookup we must recover which level to touch —
+`price` and `side` on the order give us that in O(1) without a back-pointer.
+
+`is_far` records, at insert time, whether the order was placed in a level
+(near) or parked outside the window (far). Teardown **reads** this bit rather
+than re-deriving far/near from `index_of(price)` against the *current* base:
+an order's far/near status is fixed when it is added, but a later re-center
+slides `base_price_`/`ring_origin_`, so a far order can drift inside the
+window (or vice versa) and the two frames disagree. Recomputing at teardown
+would misclassify — take the near branch for an order never linked into a
+level, corrupting that level's aggregate and unlinking whatever rested there.
+Storing insertion-time truth and reading it back makes teardown symmetric
+with insertion and immune to base motion.
+
+**Two distinct sentinels.** `kNullIdx` (`UINT32_MAX`) is the *null pool link*
+— an empty free list, an unlinked list end, an empty level's `head_idx`. It
+is also what `RefIndex::find` returns for a miss. `kNoLevel` (also
+`UINT32_MAX`, but a separate named constant for intent) is what `index_of`
+returns when a price is **outside the ring window** — the far-order signal.
+`kInvalidPrice` (`INT64_MIN`) is the "no such side" return from
+`best_bid`/`best_ask` on an empty book.
 
 ### (b) Ref index — `RefIndex ref_index_`
 Open-addressed hash map `order_ref → pool slot`. This lookup fires on
@@ -106,18 +126,42 @@ level, O(1). Deletes unlink from the middle in O(1) via `prev_idx`/
 `next_idx`.
 
 **Re-centering (sliding window).** Prices drift; the array covers a band
-around the inside. When the touch nears the array edge, `recenter` slides
-the window by advancing `base_price_`/`ring_origin_` and clearing only the
-vacated slots — O(distance moved), and distance is tiny per event because
-price moves a tick or two, not thousands. This is the production-grade
-alternative to a fixed window that rejects out-of-range prices (toy).
-Re-centering count is tracked (`recenters_`).
+around the inside. `add_order` triggers `recenter` when an incoming price
+falls outside the window (`index_of` returns `kNoLevel`) *but* is still
+within a window's width of the current center — i.e. a genuine drift, not a
+wild outlier. (A price beyond that guard is treated as a far order, below,
+rather than dragging the whole window to it.) `recenter(new_center)` rebases
+so the window is centered on `new_center` (`new_base = new_center -
+window/2`), then re-derives the level index.
 
-**Far orders.** Orders whose price is outside the near-touch band still
-live in `pool_` + `ref_index_` (so `E`/`X`/`D`/`U` on them still work) but
-are **not** placed in a level. Nobody reads depth thousands of ticks off
-the touch on the hot path. Counted (`far_orders_`) so a mis-sized band is
-observable.
+`recenter` has two paths, chosen by how far the base moves (`delta`):
+
+- **Partial slide** (`|delta| < window`): only the `|delta|` slots that
+  scroll off the trailing edge are vacated. Each is `evict_level`'d (its
+  resting orders freed from the pool and erased from `ref_index_`, counted
+  in `evicted_`) and reset to an empty `Level{}`; `base_price_` and
+  `ring_origin_` advance by `delta` (mod `window`) so surviving levels keep
+  their price↔slot mapping for free — no array shift. Cost is O(|delta|),
+  and `|delta|` is a tick or two per event, not thousands.
+- **Full clear** (`|delta| ≥ window`): the whole old window has scrolled
+  out of view, so every level is evicted, all levels/bitmaps are zeroed,
+  and `ring_origin_` resets to 0. O(window), but rare.
+
+After a slide the touch bitmap is recomputed by `rebuild_bitmap`, an
+O(window) rescan that re-derives every set bit from the non-empty levels.
+(Rebuilding wholesale rather than incrementally clearing the vacated bits is
+the simpler correct choice; it is off the common hot path since re-centers
+are infrequent, and is a candidate for incremental clearing if the
+benchmark says it matters.) Re-centering count is tracked (`recenters_`).
+
+**Far orders.** Orders whose price is outside the near-touch band (and
+outside the re-center guard) still live in `pool_` + `ref_index_` (so
+`E`/`X`/`D`/`U` on them still work) but are **not** placed in a level and
+carry no touch bit. Nobody reads depth thousands of ticks off the touch on
+the hot path. Counted (`far_orders_`) so a mis-sized band is observable.
+`remove_at_slot` recognizes a far order by its stored `is_far` flag (set at
+insert time, not recomputed from the current window) and tears it down with
+just a slot-free + ref-erase, no level bookkeeping.
 
 ### (d) Touch bitmap — hierarchical non-empty-level bitset
 Per side, a two-tier bitmap marking which levels are non-empty, so
@@ -129,6 +173,11 @@ O(window) scan:
 - `bid_summary_` / `ask_summary_`: one `uint64_t`; bit *j* set ⇔ detail
   word *j* is non-zero. 64 summary bits cover all 64 detail words.
 
+The fixed two-tier size caps `window` at **4096** (`offset >> 6` must land
+in `[0, 64)`). This is comfortably larger than any near-touch band worth
+keeping dense; a larger band belongs in the far-order bucket, not a wider
+bitmap.
+
 The bitmap is indexed by **logical offset**, not ring slot, so bit order
 == price order (see "Ring + bitmap indexing" below). Finding the best
 level is two `clz`/`ctz` instructions:
@@ -139,9 +188,30 @@ level is two `clz`/`ctz` instructions:
 
 The bitmap is the **source of truth** for the touch — there are no cached
 `best_*_idx_` scalars to keep consistent. `add_order` sets a bit when a
-level goes empty→non-empty; the delete path clears a bit when a level goes
+level goes empty→non-empty; `remove_at_slot` clears a bit when a level goes
 non-empty→empty (and clears the summary bit when its detail word hits
-zero).
+zero). `best_bid`/`best_ask` return `kInvalidPrice` when their side's
+summary word is zero (empty book).
+
+## Observability counters
+The book keeps a handful of monotone `uint64_t` counters, cheap to bump and
+meant to make invariant violations and mis-sizing *observable* rather than
+silent:
+
+| Counter | Bumped when |
+|---|---|
+| `pool_full_drops_` | `alloc_slot` fails (pool exhausted) → order dropped |
+| `far_orders_` | an add lands outside the band (net live far orders) |
+| `recenters_` | a `recenter` runs |
+| `evicted_` | a resting order is dropped by a re-center's eviction |
+| `not_found_` | an `E`/`X`/`D`/`U` names a `ref` not in the index |
+
+`not_found_` is the important correctness tripwire: under a clean, in-order
+replay it should stay **zero**. A nonzero value means either a feed gap
+(missed the `A`/`F` that introduced the ref) or a routing bug (e.g. a `P`
+trade wrongly fed into the book). `pool_full_drops_` and `far_orders_` /
+`evicted_` staying near zero is the signal that `pool_capacity` and `window`
+are sized correctly for the symbol.
 
 ## Ring + bitmap indexing — why the two use different indices
 The **levels** are a ring (physical slot = `(offset + ring_origin_) &
@@ -174,14 +244,17 @@ per symbol** (`symbol_` set at construction).
 - `S` (SystemEvent) marks start/end of day and session boundaries — use
   it to know when the book should be empty.
 
-## Interface (contract sketch)
-One method per ITCH message effect — these are exactly what the decoder's
-`switch` calls (feed-handler.md §1). Arguments are the wire fields of that
-message, already byte-swapped:
+## Interface
+One public mutator per ITCH message effect — these are exactly what the
+decoder's `switch` calls (feed-handler.md §1). Arguments are the wire fields
+of that message, already byte-swapped:
 
 ```cpp
 class OrderBook {
 public:
+    OrderBook(SymbolId symbol, price_t base_price,
+              std::size_t window, std::size_t pool_capacity);
+
     // mutations, called by the decoder:
     void add_order(order_ref_t ref, Side side, price_t price,
                    qty_t shares) noexcept;                       // A / F
@@ -192,8 +265,8 @@ public:
                        price_t price, qty_t shares) noexcept;     // U
 
     // hot query:
-    price_t best_bid() const noexcept;
-    price_t best_ask() const noexcept;
+    price_t best_bid() const noexcept;   // kInvalidPrice if no bids
+    price_t best_ask() const noexcept;   // kInvalidPrice if no asks
     qty_t   qty_at(Side side, price_t price) const noexcept;
 };
 ```
@@ -202,9 +275,25 @@ Note what `execute_order` / `cancel_order` / `delete_order` /
 `replace_order` **don't** take: no symbol, no side, no price. ITCH
 identifies the order by `ref` alone and expects you to recover the rest via
 `ref_index_` → pool slot → the order's stored `side`/`price`. That is why
-`replace_order` reads `old_ref`'s side (and price) from its `RestingOrder`
-*before* deleting it, then re-adds `new_ref` (which **loses time
-priority**).
+`replace_order` reads `old_ref`'s side from its `RestingOrder` *before*
+deleting it, then re-adds `new_ref` at the new price/qty (which **loses time
+priority** — it is appended at the tail of the new level).
+
+**Shared reduce path.** `execute_order` (E) and `cancel_order` (X) are
+identical to the book: both reduce the resting order's shares by `shares`.
+They therefore both delegate to a private `reduce(ref, shares)` which decrements
+the order (and its level's `total_qty`) if `shares` is partial, or removes the
+order entirely if `shares` meets or exceeds what remains. The distinction
+between an execution and a cancel (fill vs. pulled liquidity) matters to the
+trade tape and analytics, not to book state, so it is not preserved here.
+
+**`remove_at_slot(uint32_t)` — the shared teardown.** `delete_order`, the
+`reduce` full-removal branch, and `replace_order` (via `delete_order`) all
+converge on `remove_at_slot`: unlink the order from its level's intrusive
+list, decrement `order_count`/`total_qty`, clear the touch bit if the level
+went empty, free the pool slot, and erase the ref from `ref_index_`. The
+far-order case (order lives in the pool/ref-index but not in a level, flagged
+by `is_far`) is handled first with just a slot free + ref erase.
 
 ## Latency notes
 `add_order` / the reduce path / `best_bid`/`best_ask` are the hottest
@@ -225,17 +314,18 @@ factor, layout), not to decide whether to move off a `std::map` baseline.
 - [x] `ref_index_` (open-addressed `ref → slot`)
 - [x] `index_of` (ring offset→slot, far-order detection)
 - [x] `add_order` (A/F): alloc, fill, tail-link (FIFO), ref-index insert,
-      set touch bit; far-order path done. (recenter trigger still TODO)
-- [ ] `delete_order` (D): unlink, level decrement, free slot, ref-index
-      erase, clear touch bit on empty
-- [ ] `execute_order` (E/C), `cancel_order` (X): reduce shares; remove when
-      it hits zero
-- [ ] `replace_order` (U = read old side/price → delete → add new ref,
-      loses time priority)
-- [ ] `best_bid` / `best_ask` (bitmap `clz`/`ctz`), `qty_at`
-- [ ] `recenter` slow path (slide window, clear vacated slots + bits)
-- [ ] Tests: partial execute, partial cancel, delete-empties-level,
-      `U` re-add, crossed-book guard, far-order round-trip, recenter
+      set touch bit; far-order path; recenter trigger
+- [x] `delete_order` (D) → `remove_at_slot`: unlink, level decrement, free
+      slot, ref-index erase, clear touch bit on empty
+- [x] `execute_order` (E/C), `cancel_order` (X) → shared `reduce`: reduce
+      shares; remove when it hits zero
+- [x] `replace_order` (U = read old side → delete → add new ref, loses time
+      priority)
+- [x] `best_bid` / `best_ask` (bitmap `clz`/`ctz`), `qty_at`
+- [x] `recenter`: partial slide + full-clear paths, eviction of scrolled-out
+      orders, bitmap rebuild
+- [x] Tests: partial execute, partial cancel, delete-empties-level, `U`
+      re-add, far-order round-trip, recenter (in `tests/test_orderbook.cpp`)
 - [ ] Cross-check: replay a full session, assert book empty after end-of-
       day `S` message
 - [ ] Benchmark apply + best query (Linux, pinned)

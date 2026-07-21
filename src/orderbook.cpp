@@ -53,6 +53,15 @@ uint32_t OrderBook::index_of(price_t price) const noexcept {
 }
 
 void OrderBook::add_order(order_ref_t ref, Side side, price_t price, qty_t shares) noexcept {
+    uint32_t idx = index_of(price);
+    if (idx == kNoLevel) {
+        price_t center = base_price_ + (mask_ + 1) / 2;
+        if (std::abs(price - center) < static_cast<price_t>(mask_ + 1)) {
+            recenter(price);
+            idx = index_of(price);
+        }
+    }
+    
     uint32_t slot = alloc_slot();
     if (slot == kNullIdx) {
         pool_full_drops_++;
@@ -63,8 +72,8 @@ void OrderBook::add_order(order_ref_t ref, Side side, price_t price, qty_t share
     pool_[slot].side = side;
     pool_[slot].price = price;
     pool_[slot].shares = shares;
-   
-    uint32_t idx = index_of(price);
+    pool_[slot].is_far = false;
+    
     std::size_t offset = static_cast<std::size_t>(price - base_price_);
     auto& levels = (side == Side::Buy) ? bid_levels_ : ask_levels_;
     auto& bits = (side == Side::Buy) ? bid_bits_ : ask_bits_;
@@ -75,6 +84,7 @@ void OrderBook::add_order(order_ref_t ref, Side side, price_t price, qty_t share
         ref_index_.insert(ref, slot);
         pool_[slot].prev_idx = kNullIdx;
         pool_[slot].next_idx = kNullIdx;
+        pool_[slot].is_far = true;
         return;
     }
 
@@ -107,14 +117,15 @@ void OrderBook::remove_at_slot(uint32_t slot) {
     price_t price = pool_[slot].price;
     Side side = pool_[slot].side;
     order_ref_t ref = pool_[slot].ref;
-    uint32_t idx = index_of(price);
 
-    if (idx == kNoLevel) {
+    if (pool_[slot].is_far) {
         free_slot(slot);
         ref_index_.erase(ref);
         far_orders_--;
         return;
     }
+
+    uint32_t idx = index_of(price);
 
     auto& levels = (side == Side::Buy) ? bid_levels_ : ask_levels_;
     auto& bits = (side == Side::Buy) ? bid_bits_ : ask_bits_;
@@ -166,13 +177,12 @@ void OrderBook::reduce(order_ref_t ref, qty_t shares) noexcept {
         return;
     }
 
-    uint32_t idx = index_of(pool_[slot].price);
     auto& levels = (pool_[slot].side == Side::Buy) ? bid_levels_ : ask_levels_;
 
     if (pool_[slot].shares > shares) {
         pool_[slot].shares -= shares;
-        if (idx != kNoLevel) {
-            levels[idx].total_qty -= shares;
+        if (!pool_[slot].is_far) {
+            levels[index_of(pool_[slot].price)].total_qty -= shares;
         }
         return;
     } else {
@@ -227,41 +237,92 @@ price_t OrderBook::best_ask() const noexcept {
     return base_price_ + offset;
 }
 
+void OrderBook::evict_level(Level& lvl) noexcept {
+    uint32_t cur = lvl.head_idx;
+    while (cur != kNullIdx) {
+        uint32_t next = pool_[cur].next_idx;
+        ref_index_.erase(pool_[cur].ref);
+        free_slot(cur);
+        evicted_++;
+        cur = next;
+    }
+}
+
+void OrderBook::rebuild_bitmap() noexcept {
+    std::fill(std::begin(bid_bits_), std::end(bid_bits_), 0ULL);
+    std::fill(std::begin(ask_bits_), std::end(ask_bits_), 0ULL);
+    bid_summary_ = 0;
+    ask_summary_ = 0;
+    for (uint32_t slot = 0; slot < (mask_ + 1); slot++) {
+        if (bid_levels_[slot].head_idx == kNullIdx) continue;
+        price_t price = pool_[bid_levels_[slot].head_idx].price;
+        std::size_t offset = static_cast<std::size_t>(price - base_price_);
+        std::size_t word = offset >> 6;
+        std::size_t bit = offset & 63;
+        bid_bits_[word] |= (1ULL << bit);
+        bid_summary_ |= (1ULL << word);
+    }
+
+    for (uint32_t slot = 0; slot < (mask_ + 1); slot++) {
+        if (ask_levels_[slot].head_idx == kNullIdx) continue;
+        price_t price = pool_[ask_levels_[slot].head_idx].price;
+        std::size_t offset = static_cast<std::size_t>(price - base_price_);
+        std::size_t word = offset >> 6;
+        std::size_t bit = offset & 63;
+        ask_bits_[word] |= (1ULL << bit);
+        ask_summary_ |= (1ULL << word);
+    }
+}
+
 void OrderBook::recenter(price_t new_center) noexcept {
-    price_t new_base = new_center - (mask_ + 1) / 2;
+    uint32_t window = mask_ + 1;
+    price_t new_base = new_center - (window) / 2;
     price_t delta = new_base - base_price_;
     if (delta == 0) return;
 
-    if (abs(delta) >= static_cast<price_t>(mask_ + 1)) {
+    if (std::abs(delta) >= static_cast<price_t>(window)) {
+        for (uint32_t s = 0; s < window; s++) {
+            evict_level(bid_levels_[s]);
+            evict_level(ask_levels_[s]);
+        }
         std::fill(bid_levels_.begin(), bid_levels_.end(), Level{});
         std::fill(ask_levels_.begin(), ask_levels_.end(), Level{});
         std::fill(std::begin(bid_bits_), std::end(bid_bits_), 0ULL);
         std::fill(std::begin(ask_bits_), std::end(ask_bits_), 0ULL);
         bid_summary_ = 0;
         ask_summary_ = 0;
+        base_price_ = new_base;
+        ring_origin_ = 0;
+        recenters_++;
+        return;
     } else {
         if (delta > 0) {
             for (uint32_t o = 0; o < static_cast<uint32_t>(delta); o++) {
                 uint32_t slot = (ring_origin_ + o) & mask_;
-                assert(bid_levels_[slot].order_count == 0 && ask_levels_[slot].order_count == 0);
+                evict_level(bid_levels_[slot]);
+                evict_level(ask_levels_[slot]);
 
                 bid_levels_[slot] = Level{};
                 ask_levels_[slot] = Level{};
-
-                uint32_t word = o >> 6, bit = o & 63;
-                bid_bits_[word] &= ~(1ULL << bit);
-                if (bid_bits_[word] == 0) bid_summary_ &= ~(1ULL << word);
-                ask_bits_[word] &= ~(1ULL << bit);
-                if (ask_bits_[word] == 0) ask_summary_ &= ~(1ULL << word);
             }
         } else {
-            
+            uint32_t n = static_cast<uint32_t>(-delta);
+            for (uint32_t o = window - n; o < window; o++) {
+                uint32_t slot = (ring_origin_ + o) & mask_;
+                evict_level(bid_levels_[slot]);
+                evict_level(ask_levels_[slot]);
+                bid_levels_[slot] = Level{};
+                ask_levels_[slot] = Level{};
+            }
         }
     }
 
     base_price_ += delta;
-    ring_origin_ = (ring_origin_ + delta + (mask_ + 1)) & mask_;
+    ring_origin_ = (ring_origin_ + delta + window) & mask_;
+    rebuild_bitmap();
     recenters_++;
+
+
 }
 
 }

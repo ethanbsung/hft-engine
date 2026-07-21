@@ -13,31 +13,14 @@ normalized event, never wire bytes.
 
 ## 1. Event representation: there is no event struct — the decoder calls the book directly
 
-`BookDelta` (in `types.hpp`) cannot represent ITCH: its `new_qty` is a
-**price-level** concept, but ITCH is **order-by-order (L3)** — `AddOrder`
-carries an order reference, and `OrderExecuted` says "order `ref` traded N
-shares" without ever naming a price. So `BookDelta` goes away as the feed's
-output type.
-
-The question was *what replaces it* — a tagged union, a `std::variant`, a
-POD union. The answer, given two decisions we made:
-
-- **One thread, no boundary** between feed handler and book. The "event"
-  never gets stored, never enters a ring buffer — it lives on the stack for
-  the microsecond between decode and apply. So it needs no fixed size, no
-  trivial-copyability, no compact tag. Those were the only real arguments
-  for a POD union over a variant, and they're gone.
-- **No venue-agnostic requirement.** One venue, so ITCH's shape may leak.
-  The "normalized event" abstraction can collapse entirely.
-
-**Decision: no intermediate event type at all.** The book exposes one
-method per message effect, and the decoder's `switch` calls them directly.
-The event *is* the function call; its arguments are exactly the fields that
-message carries — nothing uninitialized, nothing to switch on twice.
+**Decision: no intermediate event type.** The book exposes one method per
+message effect, and the decoder's `switch` calls them directly. The event
+*is* the function call; its arguments are exactly the fields that message
+carries — nothing uninitialized, nothing to switch on twice.
 
 ```cpp
 // decoder, having identified the type byte:
-case 'A': book.add_order(ref, symbol, side, price, shares);      break;
+case 'A': book.add_order(ref, side, price, shares);              break;
 case 'D': book.delete_order(ref);                                break;
 case 'E': book.execute_order(ref, shares);                       break;
 case 'X': book.cancel_order(ref, shares);                        break;
@@ -45,17 +28,15 @@ case 'U': book.replace_order(old_ref, new_ref, new_price, new_shares); break;
 // ...
 ```
 
-The variant path would cost a struct construction + a `std::visit` dispatch
-to cross a boundary that isn't there. Calling directly deletes both. This is
-what in-process ITCH handlers actually do.
+Same thread, same binary: the "event" never gets stored or crosses a queue
+— it lives on the stack for the microsecond between decode and apply, so an
+intermediate struct + `std::visit` dispatch would only add a copy across a
+boundary that isn't there. The feed handler is thereby coupled to the book's
+interface, which is fine when both are versioned together.
 
-**Consequence:** the feed handler is coupled to the book's interface. That's
-fine — same thread, same binary, versioned together. The coupling a
-normalized event would have *added* (to avoid this coupling) was the
-speculative part.
-
-`types.md` and `order-book.md` were written against the price-level model
-and the variant idea; both need updating to this decision.
+(The full reasoning — why the old `BookDelta` price-level type couldn't
+represent L3 ITCH, and why a `std::variant` normalized event isn't worth it
+here — is in `interview-prep.md §8`.)
 
 ---
 
@@ -303,9 +284,8 @@ times so microbursts are reproduced and p99.9 is real.
 
 **Decided (§1)**
 - [x] Event representation: no event struct; decoder `switch` calls book
-      methods directly. `U` → single `replace_order` (§3.1).
-- [ ] Update `types.md` + `order-book.md` to match (drop `BookDelta` as the
-      feed output; the variant idea is off the table)
+      methods directly. `U` → single `replace_order` (§3.1). `BookDelta`
+      dropped from the codebase; rationale lives in `interview-prep.md §8`.
 
 **Sequence: BinaryFILE-first, then Mold, then simulator.** Decode is pure
 logic testable against the 281 MB fixture with the histogram as oracle and
