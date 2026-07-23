@@ -4,6 +4,7 @@ build-perf/
 build-asan/
 compile_commands.json
 .cache/
+build*
 
 # Market data fixtures: large, and re-downloadable. Never commit them.
 # (Nasdaq ITCH days are GBs; the retired Coinbase capture was 7.3 MB.)
