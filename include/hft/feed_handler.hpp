@@ -11,8 +11,10 @@ namespace hft {
 
 class Handler {
 public:
-    std::size_t decode(std::span<const std::byte> buffer, nanos_t recv_ts,
+    std::size_t decode(std::span<const std::byte> buffer, [[maybe_unused]] nanos_t recv_ts,
                        OrderBook& book) noexcept;
+
+    std::size_t messages() const noexcept { return messages_; }
                        
 private:
     static uint64_t load_be_u64(const std::byte* p, std::size_t off) {

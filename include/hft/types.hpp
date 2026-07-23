@@ -31,7 +31,7 @@ using qty_t = std::int64_t;       // quantity in smallest tradeable unit
 using order_id_t = std::uint64_t;
 using SymbolId = std::uint32_t;
 enum class Side : std::uint8_t { Buy, Sell };
-using order_ref_t = std::uint32_t;
+using order_ref_t = std::uint64_t;
 
 struct StringHash {
     using is_transparent = void;
