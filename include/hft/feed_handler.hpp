@@ -1,18 +1,20 @@
 #pragma once
 
-#include "types.hpp"
-#include "orderbook.hpp"
+#include "hft/types.hpp"
+#include "hft/orderbook.hpp"
+#include "hft/book_set.hpp"
 #include <span>
 #include <cstring>
 #include <cstdint>
 #include <cassert>
+
 
 namespace hft {
 
 class Handler {
 public:
     std::size_t decode(std::span<const std::byte> buffer, [[maybe_unused]] nanos_t recv_ts,
-                       OrderBook& book) noexcept;
+                       BookSet& books) noexcept;
 
     std::size_t messages() const noexcept { return messages_; }
                        
@@ -43,16 +45,14 @@ private:
         return (b == std::byte{'B'}) ? Side::Buy : Side::Sell;
     }
 
-    void decode_message(std::span<const std::byte> payload, OrderBook& book) noexcept;
+    void decode_message(std::span<const std::byte> payload, BookSet& book) noexcept;
     void on_add    (const std::byte* p, OrderBook& book) noexcept;  // A, F
     void on_delete (const std::byte* p, OrderBook& book) noexcept;  // D
     void on_execute(const std::byte* p, OrderBook& book) noexcept;  // E
     void on_cancel (const std::byte* p, OrderBook& book) noexcept;  // X
     void on_replace(const std::byte* p, OrderBook& book) noexcept;  // U
-    void on_stock_directory(const std::byte* p) noexcept; // R: find SPY, set target_locate_
+    void on_stock_directory(const std::byte* p, BookSet& books) noexcept; // R
 
-    uint16_t target_locate_ = 0;
-    bool locate_found_ = false;
     std::size_t messages_ = 0;
 };
 

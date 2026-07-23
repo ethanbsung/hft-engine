@@ -219,19 +219,26 @@ constexpr price_t kFar = kBase + 3 * static_cast<price_t>(kWindow);
 
 TEST(OrderBook, FarOrderNotInTouch) {
     OrderBook b = make_book();
-    b.add_order(1, Side::Buy, kFar, 100);
-    EXPECT_EQ(b.best_bid(), kInvalidPrice);        // not in the bitmap
+    // The first add centers the book on itself, so an anchor at kBase fixes the
+    // window around kBase (base_price_ = kBase - kWindow/2). kFar is then 3
+    // windows away -> genuinely far (no recenter).
+    b.add_order(1, Side::Buy, kBase, 100);
+    b.add_order(2, Side::Buy, kFar,  100);
+    EXPECT_EQ(b.best_bid(), kBase);                // anchor shows, far one does not
     EXPECT_EQ(b.qty_at(Side::Buy, kFar), 0);       // out of band -> 0
-    // But it is still tracked by ref: delete must find and remove it cleanly.
-    b.delete_order(1);
-    EXPECT_EQ(b.best_bid(), kInvalidPrice);
+    // The far order is still tracked by ref: delete must find and remove it
+    // cleanly, leaving only the anchor.
+    b.delete_order(2);
+    EXPECT_EQ(b.best_bid(), kBase);
 }
 
 TEST(OrderBook, FarOrderCoexistsWithNearOrder) {
     OrderBook b = make_book();
-    b.add_order(1, Side::Buy, kFar,       100);    // far (no recenter)
-    b.add_order(2, Side::Buy, kBase + 5,  100);    // near
-    EXPECT_EQ(b.best_bid(), kBase + 5);            // only the near one shows
+    b.add_order(1, Side::Buy, kBase,      100);    // anchor: centers window on kBase
+    b.add_order(2, Side::Buy, kFar,       100);    // far (no recenter)
+    b.add_order(3, Side::Buy, kBase + 5,  100);    // near, just above anchor
+    EXPECT_EQ(b.best_bid(), kBase + 5);            // highest near price shows
+    EXPECT_EQ(b.qty_at(Side::Buy, kFar), 0);       // far one contributes no touch
 }
 
 // --- Recenter (window follows drift) ---------------------------------------
@@ -252,8 +259,11 @@ TEST(OrderBook, RecenterFollowsDrift) {
 // price falls out of the window.
 TEST(OrderBook, RecenterDropsOldFarSide) {
     OrderBook b = make_book();
-    b.add_order(1, Side::Buy, kBase + 5, 100);     // near original center-ish
-    price_t drifted = kBase + static_cast<price_t>(kWindow) + 50;
+    // First add centers the window on kBase+5 (base_price_ = kBase+5 - kWindow/2).
+    b.add_order(1, Side::Buy, kBase + 5, 100);     // establishes the center
+    // A price out of band but within one window of the new center -> recenters
+    // upward to follow it, rather than becoming a far order.
+    price_t drifted = kBase + static_cast<price_t>(kWindow);
     b.add_order(2, Side::Buy, drifted, 100);       // triggers recenter upward
     EXPECT_EQ(b.best_bid(), drifted);
     // The old order at kBase+5 is now far below the new window. It survives

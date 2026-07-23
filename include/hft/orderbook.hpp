@@ -68,6 +68,7 @@ private:
     uint64_t bid_bits_[64] = {};
     uint64_t ask_summary_ = 0;
     uint64_t ask_bits_[64] = {};
+    bool initialized_ = false;
 
     RefIndex ref_index_;
 };

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include "hft/feed_handler.hpp"
 #include "hft/orderbook.hpp"
+#include "hft/book_set.hpp"
 #include "hft/platform.hpp"
 #include <vector>
 #include <cstddef>
@@ -11,7 +12,7 @@
 
 int main() {
     constexpr const char* kFixturePath = "tests/fixtures/itch_orderflow.bin";
-    hft::OrderBook coldBook(7457, 30392, 4096, 1 << 16);
+    hft::BookSet coldBooks(4096, 1 << 16);
     hft::Handler coldHandler;
 
     std::ifstream in(kFixturePath, std::ios::binary | std::ios::ate);
@@ -21,20 +22,20 @@ int main() {
     std::vector<std::byte> buf(n);
     in.read(reinterpret_cast<char*>(buf.data()), n);
 
-    std::size_t frames = coldHandler.decode(buf, 0, coldBook);
+    std::size_t frames = coldHandler.decode(buf, 0, coldBooks);
 
     hft::nanos_t best = INT64_MAX;
     constexpr int kIters = 20;
 
     for (size_t i = 0; i < kIters; i++) {
-        hft::OrderBook book(7457, 30392, 4096, 1 << 16);
+        hft::BookSet books(4096, 1 << 16);
         hft::Handler handler;
         hft::nanos_t start = hft::platform::now_ns();
-        frames = handler.decode(buf, 0, book);
-        
+        frames = handler.decode(buf, 0, books);
+
         hft::nanos_t end = hft::platform::now_ns();
         do_not_optimize(frames);
-        do_not_optimize(book.best_bid());
+        do_not_optimize(handler.messages());
         best = std::min(best, end - start);
     }
 

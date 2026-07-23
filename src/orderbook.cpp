@@ -53,6 +53,12 @@ uint32_t OrderBook::index_of(price_t price) const noexcept {
 }
 
 void OrderBook::add_order(order_ref_t ref, Side side, price_t price, qty_t shares) noexcept {
+    // Assumes clean data - first add order will be a realistic price
+    if (!initialized_) {
+        base_price_ = price - (mask_ + 1) / 2;
+        initialized_ = true;
+    }
+    
     uint32_t idx = index_of(price);
     if (idx == kNoLevel) {
         price_t center = base_price_ + (mask_ + 1) / 2;

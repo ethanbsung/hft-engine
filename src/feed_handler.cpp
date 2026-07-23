@@ -1,5 +1,6 @@
 #include "hft/feed_handler.hpp"
 #include "hft/orderbook.hpp"
+#include "hft/book_set.hpp"
 #include <cstring>
 #include <span>
 #include <cassert>
@@ -7,13 +8,6 @@
 #include <cstdint>
 
 namespace hft {
-
-void Handler::on_stock_directory(const std::byte* p) noexcept {
-    if (std::memcmp(p + 11, "SPY     ", 8) == 0) {
-        target_locate_ = load_be_u16(p, 1);
-        locate_found_ = true;
-    }
-}
 
 void Handler::on_add(const std::byte* p, OrderBook& book) noexcept {
     order_ref_t ref = load_be_u64(p, 11);
@@ -59,54 +53,62 @@ constexpr auto kMinLen = [] {
 }();
 }
 
-std::size_t Handler::decode(std::span<const std::byte> buffer, [[maybe_unused]] nanos_t recv_ts, OrderBook& book) noexcept {
+void Handler::on_stock_directory(const std::byte* p, BookSet& books) noexcept {
+    uint16_t locate = load_be_u16(p, 1);
+    std::string_view sym(reinterpret_cast<const char*>(p + 11), 8);
+    books.on_directory(locate, sym);
+}
+
+std::size_t Handler::decode(std::span<const std::byte> buffer, [[maybe_unused]] nanos_t recv_ts, BookSet& books) noexcept {
     std::size_t cursor = 0;
     uint64_t count = 0;
     while (buffer.size() - cursor >= 2) {
         uint16_t len = load_be_u16(buffer.data(), cursor);
+        if (len == 0) break;
         if (len > buffer.size() - cursor - 2) break;
-        decode_message(buffer.subspan(cursor + 2, len), book);
+        decode_message(buffer.subspan(cursor + 2, len), books);
         cursor += 2 + len;
         count++;
     }
     return count;
 }
 
-void Handler::decode_message(std::span<const std::byte> payload, OrderBook& book) noexcept {
+void Handler::decode_message(std::span<const std::byte> payload, BookSet& books) noexcept {
     assert(payload.size() >= 3);
     const std::byte* p = payload.data();
     char type = static_cast<char>(p[0]);
     assert(payload.size() >= kMinLen[static_cast<unsigned char>(type)]);
     if (type == 'R') {
-        on_stock_directory(p);
+        on_stock_directory(p, books);
         return;
     }
 
     uint16_t locate = load_be_u16(p, 1);
-    if (!locate_found_ || locate != target_locate_) return;
+    OrderBook* b = books.get(locate);
+    if (!b) return;
 
     switch(type) {
         case 'A':
         case 'F':
             ++messages_;
-            on_add(p, book);
+            on_add(p, *b);
             break;
         case 'D':
             ++messages_;
-            on_delete(p, book);
+            on_delete(p, *b);
             break;
         case 'C':
         case 'E':
             ++messages_;
-            on_execute(p, book);
+            on_execute(p, *b);
             break;
         case 'X':
             ++messages_;
-            on_cancel(p, book);
+            on_cancel(p, *b);
             break;
         case 'U':
             ++messages_;
-            on_replace(p, book);
+            on_replace(p, *b);
             break;
         case 'P':
             return;
