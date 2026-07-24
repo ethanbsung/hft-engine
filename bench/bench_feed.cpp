@@ -21,7 +21,7 @@ int main() {
     std::vector<std::byte> buf(n);
     in.read(reinterpret_cast<char*>(buf.data()), n);
 
-    std::size_t frames = coldHandler.decode(buf, 0, coldBooks);
+    std::size_t frames = coldHandler.decode<false>(buf, 0, coldBooks);
 
     hft::nanos_t best = INT64_MAX;
     constexpr int kIters = 20;
@@ -30,7 +30,7 @@ int main() {
         hft::BookSet books(4096, 1 << 16);
         hft::Handler handler;
         hft::nanos_t start = hft::platform::now_ns();
-        frames = handler.decode(buf, 0, books);
+        frames = handler.decode<false>(buf, 0, books);
 
         hft::nanos_t end = hft::platform::now_ns();
         do_not_optimize(frames);

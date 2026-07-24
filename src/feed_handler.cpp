@@ -1,6 +1,8 @@
 #include "hft/feed_handler.hpp"
 #include "hft/orderbook.hpp"
 #include "hft/book_set.hpp"
+#include "hft/platform.hpp"
+#include "hft/latency_sink.hpp"
 #include <cstring>
 #include <span>
 #include <cassert>
@@ -59,21 +61,23 @@ void Handler::on_stock_directory(const std::byte* p, BookSet& books) noexcept {
     books.on_directory(locate, sym);
 }
 
-std::size_t Handler::decode(std::span<const std::byte> buffer, [[maybe_unused]] nanos_t recv_ts, BookSet& books) noexcept {
+template<bool Timing>
+std::size_t Handler::decode(std::span<const std::byte> buffer, [[maybe_unused]] nanos_t recv_ts, BookSet& books, LatencySink* sink) noexcept {
     std::size_t cursor = 0;
     uint64_t count = 0;
     while (buffer.size() - cursor >= 2) {
         uint16_t len = load_be_u16(buffer.data(), cursor);
         if (len == 0) break;
         if (len > buffer.size() - cursor - 2) break;
-        decode_message(buffer.subspan(cursor + 2, len), books);
+        decode_message<Timing>(buffer.subspan(cursor + 2, len), books, sink);
         cursor += 2 + len;
         count++;
     }
     return count;
 }
 
-void Handler::decode_message(std::span<const std::byte> payload, BookSet& books) noexcept {
+template<bool Timing>
+void Handler::decode_message(std::span<const std::byte> payload, BookSet& books, LatencySink* sink) noexcept {
     assert(payload.size() >= 3);
     const std::byte* p = payload.data();
     char type = static_cast<char>(p[0]);
@@ -87,35 +91,49 @@ void Handler::decode_message(std::span<const std::byte> payload, BookSet& books)
     OrderBook* b = books.get(locate);
     if (!b) return;
 
-    switch(type) {
-        case 'A':
-        case 'F':
-            ++messages_;
-            on_add(p, *b);
-            break;
-        case 'D':
-            ++messages_;
-            on_delete(p, *b);
-            break;
-        case 'C':
-        case 'E':
-            ++messages_;
-            on_execute(p, *b);
-            break;
-        case 'X':
-            ++messages_;
-            on_cancel(p, *b);
-            break;
-        case 'U':
-            ++messages_;
-            on_replace(p, *b);
-            break;
-        case 'P':
-            return;
-        default:
-            return;
+    auto apply = [&] {
+        switch(type) {
+            case 'A':
+            case 'F':
+                ++messages_;
+                on_add(p, *b);
+                break;
+            case 'D':
+                ++messages_;
+                on_delete(p, *b);
+                break;
+            case 'C':
+            case 'E':
+                ++messages_;
+                on_execute(p, *b);
+                break;
+            case 'X':
+                ++messages_;
+                on_cancel(p, *b);
+                break;
+            case 'U':
+                ++messages_;
+                on_replace(p, *b);
+                break;
+            case 'P':
+                return;
+            default:
+                return;
+        }
+    };
+    
+    if constexpr (Timing) {
+        uint64_t t0 = platform::read_cycles();
+        apply();
+        uint64_t t1 = platform::read_cycles();
+        sink->record(t1 - t0);
+    } else {
+        apply();
     }
 }
+
+template std::size_t Handler::decode<true>(std::span<const std::byte>, nanos_t, BookSet&, LatencySink*) noexcept;
+template std::size_t Handler::decode<false>(std::span<const std::byte>, nanos_t, BookSet&, LatencySink*) noexcept;
     
 }
 

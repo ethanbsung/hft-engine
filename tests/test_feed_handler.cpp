@@ -63,7 +63,7 @@ TEST(FeedHandler, ReplaysItchFixture) {
 
     // recv_ts is unused by the current decoder (latency stamping is a later
     // concern); pass 0.
-    const std::size_t frames = handler.decode(bytes, /*recv_ts=*/0, books);
+    const std::size_t frames = handler.decode<false>(bytes, /*recv_ts=*/0, books);
 
     // Every message must frame cleanly: decode returns the count and must not
     // break early on a bad length.
