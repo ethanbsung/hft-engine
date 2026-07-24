@@ -31,6 +31,7 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 #  define HFT_ARCH_X86_64 1
+#include <x86intrin.h>
 #elif defined(__aarch64__) || defined(__arm64__)
 #  define HFT_ARCH_ARM64 1
 #endif
@@ -55,6 +56,37 @@ namespace hft::platform {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
+}
+
+[[gnu::always_inline]] inline uint64_t read_cycles() noexcept {
+#if defined(HFT_ARCH_ARM64)
+    uint64_t t;
+    asm volatile("mrs %0, cntvct_el0" : "=r"(t));
+    return t;
+#elif defined(HFT_ARCH_X86_64)
+    return __rdtsc();
+#endif
+}
+
+inline uint64_t cycles_per_sec() noexcept {
+#if defined(HFT_ARCH_ARM64)
+    uint64_t f;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(f));
+    return f;
+#elif defined(HFT_ARCH_X86_64)
+    // no frequency register -> calibrate against the ns clock
+    uint64_t c0 = read_cycles();
+    nanos_t n0 = now_ns();
+    while (now_ns() - n0 < 10'000'000) {}
+    uint64_t c1 = read_cycles();
+    nanos_t n1 = now_ns();
+    // cycles per second = elapsed cycles / elapsed seconds
+    return (c1 - c0) * 1'000'000'000ull / static_cast<uint64_t>(n1 - n0);
+#endif
+}
+
+inline double cycles_to_ns(uint64_t cycles, uint64_t freq) noexcept {
+    return static_cast<double>(cycles) * 1e9 / static_cast<double>(freq);
 }
 
 // --- CPU affinity -----------------------------------------------------------

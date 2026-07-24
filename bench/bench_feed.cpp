@@ -2,7 +2,6 @@
 #include <cstdint>
 #include <cstdio>
 #include "hft/feed_handler.hpp"
-#include "hft/orderbook.hpp"
 #include "hft/book_set.hpp"
 #include "hft/platform.hpp"
 #include <vector>
@@ -11,7 +10,7 @@
 #include <algorithm>
 
 int main() {
-    constexpr const char* kFixturePath = "tests/fixtures/itch_orderflow.bin";
+    constexpr const char* kFixturePath = "tests/fixtures/itch_500m.bin";
     hft::BookSet coldBooks(4096, 1 << 16);
     hft::Handler coldHandler;
 
