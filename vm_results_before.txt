@@ -1,0 +1,180 @@
+=== ENV ===
+CPU(s):                                  2
+On-line CPU(s) list:                     0,1
+Model name:                              Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz
+BIOS Model name:                         pc-i440fx-6.1  CPU @ 2.0GHz
+NUMA node0 CPU(s):                       0,1
+constant_tsc
+6.8.0-124-generic
+=== bench_latency x3 ===
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+[Linux/x86_64] per-message dispatch+apply latency (median of 5 runs, range across runs):
+  p50:    121.73 ns  (runs 119.51-123.96)
+  p99:    431.26 ns  (runs 425.32-436.46)
+  p99.9: 16030.20 ns  (runs 15955.97-16106.66)
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+[Linux/x86_64] per-message dispatch+apply latency (median of 5 runs, range across runs):
+  p50:    120.99 ns  (runs 120.25-121.74)
+  p99:    426.07 ns  (runs 423.85-429.78)
+  p99.9: 15985.89 ns  (runs 15861.19-16054.92)
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+callibrated TSC: 2.694 GHz
+[Linux/x86_64] per-message dispatch+apply latency (median of 5 runs, range across runs):
+  p50:    120.25 ns  (runs 118.02-122.47)
+  p99:    426.80 ns  (runs 420.12-432.74)
+  p99.9: 16032.89 ns  (runs 15894.83-16133.10)
+=== bench_feed x3 ===
+[Linux/x86_64] decode: 14.03 ns/msg, 71285091 msgs/sec over 20 iters
+[Linux/x86_64] decode: 13.98 ns/msg, 71552235 msgs/sec over 20 iters
+[Linux/x86_64] decode: 14.03 ns/msg, 71293986 msgs/sec over 20 iters
+=== perf stat ===
+[Linux/x86_64] decode: 14.11 ns/msg, 70874592 msgs/sec over 20 iters
+
+ Performance counter stats for './build-perf/bench_feed':
+
+       23900417347      instructions                                                          
+         253699119      cache-references                                                      
+         206802720      cache-misses                     #   81.51% of all cache refs         
+        4560802469      branches                                                              
+          45423821      branch-misses                    #    1.00% of all branches           
+
+       5.474672464 seconds time elapsed
+
+       4.684291000 seconds user
+       0.787877000 seconds sys
+
+
+=== perf report children ===
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 11K of event 'cycles:P'
+# Event count (approx.): 8779058933
+#
+# Children      Self  Command        Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+# ........  ........  .............  ....................  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    90.96%     0.00%  bench_latency  bench_latency         [.] _start
+            |
+            ---_start
+               __libc_start_main
+               |          
+                --90.95%--0x7516e3a2a1ca
+                          |          
+                          |--73.60%--main
+                          |          |          
+                          |          |--19.78%--hft::OrderBook::add_order(unsigned long, hft::Side, long, long)
+                          |          |          
+                          |          |--5.49%--hft::BookSet::on_directory(unsigned short, std::basic_string_view<char, std::char_traits<char> >) [clone .constprop.0]
+                          |          |          |          
+                          |          |           --5.48%--hft::OrderBook::OrderBook(unsigned int, long, unsigned long, unsigned long)
+                          |          |                     |          
+                          |          |                     |--3.21%--asm_exc_page_fault
+                          |          |                     |          |          
+                          |          |                     |           --2.81%--exc_page_fault
+                          |          |                     |                     |          
+                          |          |                     |                      --2.73%--do_user_addr_fault
+                          |          |                     |                                |          
+                          |          |                     |                                 --2.61%--handle_mm_fault
+                          |          |                     |                                           |          
+                          |          |                     |                                            --2.46%--__handle_mm_fault
+                          |          |                     |                                                      |          
+                          |          |                     |                                                       --2.34%--handle_pte_fault
+                          |          |                     |                                                                 |          
+                          |          |                     |                                                                  --2.27%--do_anonymous_page
+                          |          |                     |                                                                            |          
+                          |          |                     |                                                                             --1.52%--alloc_anon_folio
+                          |          |                     |                                                                                       |          
+                          |          |                     |                                                                                        --1.49%--vma_alloc_folio
+                          |          |                     |                                                                                                  |          
+                          |          |                     |                                                                                                   --1.45%--alloc_pages_mpol
+                          |          |                     |                                                                                                             |          
+                          |          |                     |                                                                                                              --1.43%--__alloc_pages
+                          |          |                     |                                                                                                                        |          
+                          |          |                     |                                                                                                                         --1.36%--get_page_from_freelist
+                          |          |                     |                                                                                                                                   |          
+                          |          |                     |                                                                                                                                    --1.25%--clear_page_erms
+                          |          |                     |          
+                          |          |                      --0.60%--__irqentry_text_end
+                          |          |          
+                          |          |--4.96%--std::istream::read(char*, long)
+                          |          |          std::basic_filebuf<char, std::char_traits<char> >::xsgetn(char*, long)
+                          |          |          read
+                          |          |          entry_SYSCALL_64_after_hwframe
+                          |          |          do_syscall_64
+                          |          |          x64_sys_call
+=== perf report self ===
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 11K of event 'cycles:P'
+# Event count (approx.): 8779058933
+#
+# Overhead  Command        Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+# ........  .............  ....................  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    38.13%  bench_latency  bench_latency         [.] main
+            |
+            ---main
+               0x7516e3a2a1ca
+               __libc_start_main
+               _start
+
+    19.47%  bench_latency  bench_latency         [.] hft::OrderBook::add_order(unsigned long, hft::Side, long, long)
+            |
+            ---hft::OrderBook::add_order(unsigned long, hft::Side, long, long)
+               |          
+                --19.45%--main
+                          0x7516e3a2a1ca
+                          __libc_start_main
+                          _start
+
+     6.76%  bench_latency  bench_latency         [.] void std::__introsort_loop<__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter>(__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, __gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter) [clone .isra.0]
+            |
+            ---void std::__introsort_loop<__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter>(__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, __gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter) [clone .isra.0]
+=== perf report self ===
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 11K of event 'cycles:P'
+# Event count (approx.): 8779058933
+#
+# Overhead  Command        Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+# ........  .............  ....................  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    38.13%  bench_latency  bench_latency         [.] main
+            |
+            ---main
+               0x7516e3a2a1ca
+               __libc_start_main
+               _start
+
+    19.47%  bench_latency  bench_latency         [.] hft::OrderBook::add_order(unsigned long, hft::Side, long, long)
+            |
+            ---hft::OrderBook::add_order(unsigned long, hft::Side, long, long)
+               |          
+                --19.45%--main
+                          0x7516e3a2a1ca
+                          __libc_start_main
+                          _start
+
+     6.76%  bench_latency  bench_latency         [.] void std::__introsort_loop<__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter>(__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, __gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter) [clone .isra.0]
+            |
+            ---void std::__introsort_loop<__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter>(__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, __gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter) [clone .isra.0]
