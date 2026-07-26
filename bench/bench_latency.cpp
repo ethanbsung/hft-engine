@@ -22,7 +22,10 @@ int main() {
     in.read(reinterpret_cast<char*>(buf.data()), n);
 
     uint64_t freq = hft::platform::cycles_per_sec();
-    assert(freq != 0 && "cycles_per_sec returned 0");
+    if (freq == 0) {
+        fprintf(stderr, "freq == 0");
+        return 1;
+    }
     hft::LatencySink sink;
     sink.samples.reserve(N);
 

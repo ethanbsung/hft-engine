@@ -78,10 +78,10 @@ std::size_t Handler::decode(std::span<const std::byte> buffer, [[maybe_unused]] 
 
 template<bool Timing>
 void Handler::decode_message(std::span<const std::byte> payload, BookSet& books, LatencySink* sink) noexcept {
-    assert(payload.size() >= 3);
+    if (payload.size() < 3) return;
     const std::byte* p = payload.data();
     char type = static_cast<char>(p[0]);
-    assert(payload.size() >= kMinLen[static_cast<unsigned char>(type)]);
+    if (payload.size() < kMinLen[static_cast<unsigned char>(type)]) return;
     if (type == 'R') {
         on_stock_directory(p, books);
         return;
