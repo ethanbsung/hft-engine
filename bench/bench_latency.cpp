@@ -30,27 +30,48 @@ int main() {
     hft::Handler coldHandler;
     std::size_t frames = coldHandler.decode<false>(buf, 0, coldBooks);
 
-    hft::BookSet books(4096, 1 << 16);
-    hft::Handler handler;
-    frames = handler.decode<true>(buf, 0, books, &sink);
-    std::sort(sink.samples.begin(), sink.samples.end());
-    do_not_optimize(frames);
-    do_not_optimize(handler.messages());
+    double p50s[5];
+    double p99s[5];
+    double p999s[5];
 
-    if (sink.samples.empty()) {
-        std::fprintf(stderr, "no samples\n");
-        return 1;
-    }
+    for (size_t i = 0; i < 5; ++i) {
+        sink.samples.clear();
+        hft::BookSet books(4096, 1 << 16);
+        hft::Handler handler;
+        frames = handler.decode<true>(buf, 0, books, &sink);
+        do_not_optimize(frames);
+        do_not_optimize(handler.messages());
+        std::sort(sink.samples.begin(), sink.samples.end());
+        uint64_t sz = sink.samples.size();
+        assert(sz > 0 && "size of samples must be > 0");
+        p50s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 50 / 100], freq);
+        p99s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 99 / 100], freq);
+        p999s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 999 / 1000], freq);
+    } 
 
-    std::size_t samplesSize = sink.samples.size();
-    double min = hft::platform::cycles_to_ns(sink.samples[0], freq);
-    double max = hft::platform::cycles_to_ns(sink.samples[samplesSize - 1], freq);
-    double p50 = hft::platform::cycles_to_ns(sink.samples[samplesSize * 50 / 100], freq);
-    double p99 = hft::platform::cycles_to_ns(sink.samples[samplesSize * 99 / 100], freq);
-    double p999 = hft::platform::cycles_to_ns(sink.samples[samplesSize * 999 / 1000], freq);
+    std::sort(p50s, p50s + 5);
+    double p50_median = p50s[2];
+    double p50_lo = p50s[0];
+    double p50_hi = p50s[4];
 
-    std::printf("[%s] per-message dispatch+apply latency: \nmin: %.2f ns \np50: %.2f ns \np99: %.2f ns \np99.9: %.2f ns \nmax: %.2f ns \n",
-                hft::platform::platform_tag(), min, p50, p99, p999, max);
+    std::sort(p99s, p99s + 5);
+    double p99_median = p99s[2];
+    double p99_lo = p99s[0];
+    double p99_hi = p99s[4];
+
+    std::sort(p999s, p999s + 5);
+    double p999_median = p999s[2];
+    double p999_lo = p999s[0];
+    double p999_hi = p999s[4];
+
+    std::printf("[%s] per-message dispatch+apply latency (median of 5 runs, range across runs):\n"
+                "  p50:   %7.2f ns  (runs %.2f-%.2f)\n"
+                "  p99:   %7.2f ns  (runs %.2f-%.2f)\n"
+                "  p99.9: %7.2f ns  (runs %.2f-%.2f)\n",
+                hft::platform::platform_tag(),
+                p50_median,  p50_lo,  p50_hi,
+                p99_median,  p99_lo,  p99_hi,
+                p999_median, p999_lo, p999_hi);
 
     return 0;
 }

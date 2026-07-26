@@ -64,7 +64,10 @@ namespace hft::platform {
     asm volatile("mrs %0, cntvct_el0" : "=r"(t));
     return t;
 #elif defined(HFT_ARCH_X86_64)
-    return __rdtsc();
+    _mm_lfence();
+    uint64_t t = __rdtsc();
+    _mm_lfence();
+    return t;
 #endif
 }
 
@@ -77,7 +80,7 @@ inline uint64_t cycles_per_sec() noexcept {
     // no frequency register -> calibrate against the ns clock
     uint64_t c0 = read_cycles();
     nanos_t n0 = now_ns();
-    while (now_ns() - n0 < 10'000'000) {}
+    while (now_ns() - n0 < 100'000'000) {}
     uint64_t c1 = read_cycles();
     nanos_t n1 = now_ns();
     // cycles per second = elapsed cycles / elapsed seconds
