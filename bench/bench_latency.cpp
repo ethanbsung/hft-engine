@@ -8,7 +8,6 @@
 #include <cstddef>
 #include "bench_util.hpp"
 #include <algorithm>
-#include <cassert>
 
 int main() {
     constexpr const char* kFixturePath = "tests/fixtures/itch_500m.bin";
@@ -23,7 +22,7 @@ int main() {
 
     uint64_t freq = hft::platform::cycles_per_sec();
     if (freq == 0) {
-        fprintf(stderr, "freq == 0");
+        fprintf(stderr, "freq == 0\n");
         return 1;
     }
     hft::LatencySink sink;
@@ -46,7 +45,11 @@ int main() {
         do_not_optimize(handler.messages());
         std::sort(sink.samples.begin(), sink.samples.end());
         uint64_t sz = sink.samples.size();
-        assert(sz > 0 && "size of samples must be > 0");
+        if (sz == 0) {
+            std::fprintf(stderr, "run %zu produced no samples\n", i);
+            return 1;
+        }
+        std::printf("callibrated TSC: %.3f GHz\n", freq / 1e9);
         p50s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 50 / 100], freq);
         p99s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 99 / 100], freq);
         p999s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 999 / 1000], freq);

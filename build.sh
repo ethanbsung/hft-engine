@@ -57,8 +57,12 @@ case "$MODE" in
       echo "Use 'bench' to just compile the benchmarks on your Mac." >&2
       exit 1
     fi
+    # -fno-omit-frame-pointer: keep frame pointers so `perf record` (default
+    # frame-pointer unwinding) gets fast, accurate stacks instead of [unknown].
+    # Negligible effect on -O3 latency; the readable profile is worth it.
     configure build-perf -DCMAKE_BUILD_TYPE=Release \
-      -DHFT_NATIVE=ON -DHFT_LTO=ON -DHFT_BUILD_BENCH=ON
+      -DHFT_NATIVE=ON -DHFT_LTO=ON -DHFT_BUILD_BENCH=ON \
+      -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -fno-omit-frame-pointer"
     cmake --build build-perf -j
     echo "--- perf binaries in build-perf. Pin a core, e.g.:"
     echo "    taskset -c 2 ./build-perf/bench_clock"
