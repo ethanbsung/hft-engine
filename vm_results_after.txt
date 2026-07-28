@@ -1,0 +1,359 @@
+=== ENV ===
+CPU(s):                                  2
+On-line CPU(s) list:                     0,1
+Model name:                              Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz
+BIOS Model name:                         pc-i440fx-6.1  CPU @ 2.0GHz
+NUMA node0 CPU(s):                       0,1
+6.8.0-124-generic
+constant_tsc
+=== latency x3 ===
+run 0: 238 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 1: 231 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 2: 212 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 3: 240 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 4: 226 samples >= 5us
+AAPL   far=31 not_found=0
+AMZN   far=257 not_found=0
+GOOGL  far=218 not_found=0
+MSFT   far=14 not_found=0
+QQQ    far=13 not_found=0
+SPY    far=14 not_found=0
+TSLA   far=821 not_found=0
+TOTAL far=1368 not_found=0
+calibrated TSC: 2.695 GHz
+[Linux/x86_64] per-message dispatch+apply latency (median of 5 runs, range across runs):
+  instrumentation overhead (empty fenced bracket, min of 200k): 12.62 ns
+  p50:    123.21 ns  (runs 122.47-124.70)
+  p99:    426.05 ns  (runs 424.56-428.28)
+  p99.9:  590.09 ns  (runs 581.18-595.28)
+run 0: 242 samples >= 5us
+calibrated TSC: 2.694 GHz
+run 1: 211 samples >= 5us
+calibrated TSC: 2.694 GHz
+run 2: 211 samples >= 5us
+calibrated TSC: 2.694 GHz
+run 3: 209 samples >= 5us
+calibrated TSC: 2.694 GHz
+run 4: 205 samples >= 5us
+AAPL   far=31 not_found=0
+AMZN   far=257 not_found=0
+GOOGL  far=218 not_found=0
+MSFT   far=14 not_found=0
+QQQ    far=13 not_found=0
+SPY    far=14 not_found=0
+TSLA   far=821 not_found=0
+TOTAL far=1368 not_found=0
+calibrated TSC: 2.694 GHz
+[Linux/x86_64] per-message dispatch+apply latency (median of 5 runs, range across runs):
+  instrumentation overhead (empty fenced bracket, min of 200k): 13.36 ns
+  p50:    123.21 ns  (runs 120.24-123.96)
+  p99:    425.31 ns  (runs 423.08-428.28)
+  p99.9:  585.64 ns  (runs 577.47-595.29)
+run 0: 239 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 1: 248 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 2: 272 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 3: 232 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 4: 209 samples >= 5us
+AAPL   far=31 not_found=0
+AMZN   far=257 not_found=0
+GOOGL  far=218 not_found=0
+MSFT   far=14 not_found=0
+QQQ    far=13 not_found=0
+SPY    far=14 not_found=0
+TSLA   far=821 not_found=0
+TOTAL far=1368 not_found=0
+calibrated TSC: 2.695 GHz
+[Linux/x86_64] per-message dispatch+apply latency (median of 5 runs, range across runs):
+  instrumentation overhead (empty fenced bracket, min of 200k): 13.36 ns
+  p50:    123.21 ns  (runs 122.47-123.95)
+  p99:    425.30 ns  (runs 423.82-429.75)
+  p99.9:  593.05 ns  (runs 586.37-596.01)
+=== feed x3 ===
+[Linux/x86_64] decode: 13.17 ns/msg, 75909611 msgs/sec over 20 iters
+[Linux/x86_64] decode: 13.38 ns/msg, 74765640 msgs/sec over 20 iters
+[Linux/x86_64] decode: 13.36 ns/msg, 74833166 msgs/sec over 20 iters
+=== perf stat ===
+[Linux/x86_64] decode: 13.39 ns/msg, 74657717 msgs/sec over 20 iters
+
+ Performance counter stats for './build-perf/bench_feed':
+
+       17817911865      instructions                                                          
+         282157815      cache-references                                                      
+         206164332      cache-misses                     #   73.07% of all cache refs         
+        3488380602      branches                                                              
+          42304746      branch-misses                    #    1.21% of all branches           
+
+       5.102606521 seconds time elapsed
+
+       4.278638000 seconds user
+       0.823850000 seconds sys
+
+
+=== perf report ===
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 10K of event 'cycles:P'
+# Event count (approx.): 7744534692
+#
+# Children      Self  Command        Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+# ........  ........  .............  ....................  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    77.45%     0.00%  bench_latency  bench_latency         [.] _start
+            |
+            ---_start
+               __libc_start_main
+               0x76c96b42a1ca
+               |          
+               |--60.65%--main
+               |          |          
+               |          |--6.32%--hft::BookSet::on_directory(unsigned short, std::basic_string_view<char, std::char_traits<char> >) [clone .constprop.0]
+               |          |          |          
+               |          |           --6.29%--hft::OrderBook::OrderBook(unsigned int, long, unsigned long, unsigned long)
+               |          |                     |          
+               |          |                      --4.34%--asm_exc_page_fault
+               |          |                                |          
+               |          |                                 --3.71%--exc_page_fault
+               |          |                                           |          
+               |          |                                            --3.58%--do_user_addr_fault
+               |          |                                                      |          
+               |          |                                                       --3.37%--handle_mm_fault
+               |          |                                                                 |          
+               |          |                                                                  --3.27%--__handle_mm_fault
+               |          |                                                                            |          
+               |          |                                                                             --3.19%--handle_pte_fault
+               |          |                                                                                       |          
+               |          |                                                                                        --3.13%--do_anonymous_page
+               |          |                                                                                                  |          
+               |          |                                                                                                   --2.21%--alloc_anon_folio
+               |          |                                                                                                             |          
+               |          |                                                                                                              --2.20%--vma_alloc_folio
+               |          |                                                                                                                        |          
+               |          |                                                                                                                         --2.17%--alloc_pages_mpol
+               |          |                                                                                                                                   |          
+               |          |                                                                                                                                    --2.15%--__alloc_pages
+               |          |                                                                                                                                              |          
+               |          |                                                                                                                                               --2.10%--get_page_from_freelist
+               |          |                                                                                                                                                         |          
+               |          |                                                                                                                                                          --1.98%--clear_page_erms
+               |          |          
+               |          |--4.95%--std::istream::read(char*, long)
+               |          |          std::basic_filebuf<char, std::char_traits<char> >::xsgetn(char*, long)
+               |          |          read
+               |          |          entry_SYSCALL_64_after_hwframe
+               |          |          do_syscall_64
+               |          |          x64_sys_call
+               |          |          __x64_sys_read
+               |          |          ksys_read
+               |          |          vfs_read
+               |          |          ext4_file_read_iter
+               |          |          generic_file_read_iter
+=== perf report self ===
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 10K of event 'cycles:P'
+# Event count (approx.): 7744534692
+#
+# Overhead  Command        Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+# ........  .............  ....................  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    43.86%  bench_latency  bench_latency         [.] main
+            |
+            ---main
+               0x76c96b42a1ca
+               __libc_start_main
+               _start
+
+    13.17%  bench_latency  bench_latency         [.] hft::OrderBook::add_order(unsigned long, hft::Side, long, long)
+            |          
+             --11.82%--hft::OrderBook::add_order(unsigned long, hft::Side, long, long)
+                       |          
+                        --0.50%--0x76c96b42a1ca
+                                  __libc_start_main
+                                  _start
+
+     7.83%  bench_latency  bench_latency         [.] void std::__introsort_loop<__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter>(__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, __gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter) [clone .isra.0]
+            |
+            ---void std::__introsort_loop<__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter>(__gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, __gnu_cxx::__normal_iterator<unsigned int*, std::vector<unsigned int, std::allocator<unsigned int> > >, long, __gnu_cxx::__ops::_Iter_less_iter) [clone .isra.0]
+
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 10K of event 'cycles:P'
+# Event count (approx.): 7744534692
+#
+# Children      Self  Command        Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+# ........  ........  .............  ....................  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    77.45%     0.00%  bench_latency  bench_latency         [.] _start
+            |
+            ---_start
+               __libc_start_main
+               0x76c96b42a1ca
+               |          
+               |--60.65%--main
+               |          |          
+               |          |--6.32%--hft::BookSet::on_directory(unsigned short, std::basic_string_view<char, std::char_traits<char> >) [clone .constprop.0]
+               |          |          |          
+               |          |           --6.29%--hft::OrderBook::OrderBook(unsigned int, long, unsigned long, unsigned long)
+               |          |                     |          
+               |          |                      --4.34%--asm_exc_page_fault
+               |          |                                |          
+               |          |                                 --3.71%--exc_page_fault
+               |          |                                           |          
+               |          |                                            --3.58%--do_user_addr_fault
+               |          |                                                      |          
+               |          |                                                       --3.37%--handle_mm_fault
+               |          |                                                                 |          
+               |          |                                                                  --3.27%--__handle_mm_fault
+               |          |                                                                            |          
+               |          |                                                                             --3.19%--handle_pte_fault
+               |          |                                                                                       |          
+               |          |                                                                                        --3.13%--do_anonymous_page
+               |          |                                                                                                  |          
+               |          |                                                                                                   --2.21%--alloc_anon_folio
+               |          |                                                                                                             |          
+               |          |                                                                                                              --2.20%--vma_alloc_folio
+               |          |                                                                                                                        |          
+               |          |                                                                                                                         --2.17%--alloc_pages_mpol
+               |          |                                                                                                                                   |          
+               |          |                                                                                                                                    --2.15%--__alloc_pages
+               |          |                                                                                                                                              |          
+               |          |                                                                                                                                               --2.10%--get_page_from_freelist
+               |          |                                                                                                                                                         |          
+               |          |                                                                                                                                                          --1.98%--clear_page_erms
+               |          |          
+               |          |--4.95%--std::istream::read(char*, long)
+               |          |          std::basic_filebuf<char, std::char_traits<char> >::xsgetn(char*, long)
+               |          |          read
+               |          |          entry_SYSCALL_64_after_hwframe
+               |          |          do_syscall_64
+               |          |          x64_sys_call
+               |          |          __x64_sys_read
+               |          |          ksys_read
+               |          |          vfs_read
+               |          |          ext4_file_read_iter
+               |          |          generic_file_read_iter
+               |          |          filemap_read
+               |          |          |          
+               |          |           --4.66%--copy_page_to_iter
+               |          |                     |          
+               |          |                      --4.57%--rep_movs_alternative
+               |          |          
+               |          |--3.72%--std::chrono::_V2::steady_clock::now()
+               |          |          |          
+               |          |           --3.52%--clock_gettime
+               |          |                     |          
+               |          |                      --1.86%--0x7ffca87b8c6a
+               |          |          
+               |           --1.06%--__munmap
+               |                     entry_SYSCALL_64_after_hwframe
+               |                     do_syscall_64
+               |                     x64_sys_call
+               |                     __x64_sys_munmap
+               |                     __vm_munmap
+               |                     do_vmi_munmap
+               |                     do_vmi_align_munmap
+               |                     unmap_region
+               |                     |          
+               |                      --1.03%--unmap_vmas
+               |                                unmap_single_vma
+               |                                unmap_page_range
+               |                                zap_pmd_range.isra.0
+               |                                |          
+               |                                 --0.98%--zap_pte_range
+               |                                           |          
+               |                                            --0.73%--tlb_flush_mmu
+               |                                                      tlb_batch_pages_flush
+               |                                                      |          
+               |                                                       --0.71%--free_pages_and_swap_cache
+               |                                                                 release_pages
+               |          
+               |--11.99%--0x76c96b59943a
+               |          |          
+               |          |--9.37%--asm_exc_page_fault
+               |          |          |          
+               |          |           --7.84%--exc_page_fault
+               |          |                     |          
+               |          |                      --7.57%--do_user_addr_fault
+               |          |                                |          
+               |          |                                 --7.24%--handle_mm_fault
+               |          |                                           |          
+               |          |                                            --6.95%--__handle_mm_fault
+               |          |                                                      |          
+               |          |                                                       --6.77%--handle_pte_fault
+               |          |                                                                 |          
+               |          |                                                                  --6.53%--do_anonymous_page
+               |          |                                                                            |          
+               |          |                                                                            |--5.15%--alloc_anon_folio
+               |          |                                                                            |          |          
+               |          |                                                                            |           --5.07%--vma_alloc_folio
+               |          |                                                                            |                     |          
+               |          |                                                                            |                      --4.97%--alloc_pages_mpol
+               |          |                                                                            |                                |          
+               |          |                                                                            |                                 --4.89%--__alloc_pages
+               |          |                                                                            |                                           |          
+               |          |                                                                            |                                            --4.81%--get_page_from_freelist
+=== perf stat: bench_latency (applied-message path) ===
+Workload failed: No such file or directory
+=== overhead stability x5 ===
+=== perf stat: bench_latency (applied-message path) ===
+run 0: 214 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 1: 203 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 2: 222 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 3: 207 samples >= 5us
+calibrated TSC: 2.695 GHz
+run 4: 222 samples >= 5us
+AAPL   far=31 not_found=0
+AMZN   far=257 not_found=0
+GOOGL  far=218 not_found=0
+MSFT   far=14 not_found=0
+QQQ    far=13 not_found=0
+SPY    far=14 not_found=0
+TSLA   far=821 not_found=0
+TOTAL far=1368 not_found=0
+calibrated TSC: 2.695 GHz
+[Linux/x86_64] per-message dispatch+apply latency (median of 5 runs, range across runs):
+  instrumentation overhead (empty fenced bracket, min of 200k): 13.36 ns
+  p50:    123.95 ns  (runs 123.21-124.70)
+  p99:    429.01 ns  (runs 427.53-429.76)
+  p99.9:  596.02 ns  (runs 590.08-601.21)
+
+ Performance counter stats for './build-perf/bench_latency':
+
+        6860798206      instructions                                                          
+          97643148      cache-references                                                      
+          69882374      cache-misses                     #   71.57% of all cache refs         
+        1343073692      branches                                                              
+          29143678      branch-misses                    #    2.17% of all branches           
+
+       2.380334767 seconds time elapsed
+
+       1.844515000 seconds user
+       0.522089000 seconds sys
+
+
+=== overhead stability x5 ===
+  instrumentation overhead (empty fenced bracket, min of 200k): 13.36 ns
+  instrumentation overhead (empty fenced bracket, min of 200k): 13.36 ns
+  instrumentation overhead (empty fenced bracket, min of 200k): 13.36 ns
+  instrumentation overhead (empty fenced bracket, min of 200k): 12.62 ns
+  instrumentation overhead (empty fenced bracket, min of 200k): 12.62 ns

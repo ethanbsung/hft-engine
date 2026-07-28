@@ -142,7 +142,8 @@ itself, **evicting the near-mid book**, and the next normal add dragged it
 back. Measured over one session: **2 124 re-centres, ~14 000 resting orders
 evicted**, and an equal number of later lookups failing. It also owned the
 entire latency tail, since each re-centre ran an O(window) `rebuild_bitmap`;
-removing it took p99.9 from 8 041 ns to 208 ns. Full write-up in
+removing it took p99.9 from 15 981 ns to 590 ns (27×) on Linux/x86, with p50
+and p99 unchanged. Full write-up in
 `docs/benchmarks.md` §6.
 
 A sliding window is legitimate where price ranges are genuinely unbounded

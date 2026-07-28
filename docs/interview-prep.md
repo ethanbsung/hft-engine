@@ -200,7 +200,8 @@ evicted**, and an equal number of subsequent lookups failing.
 
 It was also the entire latency tail. Each recentre ran `rebuild_bitmap()`, an
 O(window) rescan, and the counts matched 1:1 — 2 124 recentres against ~2 150
-samples over 5 µs. Removing it took **p99.9 from 8 041 ns to 208 ns**.
+samples over 5 µs. Removing it took **p99.9 from 15 981 ns to 590 ns** on
+Linux/x86 — a 27× reduction, with p50 and p99 unchanged.
 
 **What real desks do:** most equities books use a fixed absolute price array
 sized from the previous close, because the memory is irrelevant (a few MB) and
@@ -364,9 +365,23 @@ invariants.
 ## 11. Measuring honestly — and what measurement found
 
 **Decision:** Per-message latency is measured with the CPU cycle counter, fenced,
-compiled in only for the benchmark build, over ~862 k applied messages of real
-ITCH, reported as a distribution across 5 runs. Full methodology in
+compiled in only for the benchmark build, over 862 k applied messages of real
+ITCH, reported as a distribution across 20 runs. Full methodology in
 `docs/benchmarks.md`.
+
+**The measured result:** **p50 123 ns / p99 426 ns / p99.9 590 ns** on a pinned
+core of a Xeon 8280 at 2.694 GHz; instrumentation overhead 34–36 cycles, so net
+≈110 ns. p50 spans 120.24–126.18 ns across all 20 runs.
+
+**Calibrate your own claim before someone else does.** ~110 ns for a hash
+lookup plus level access plus list unlink plus a three-tier bitmap update is
+*competent, not exceptional* — roughly 300 cycles, consistent with 2–3 cache
+misses and real work. Production books on tuned bare metal typically land
+50–150 ns for the same operation. Say that yourself rather than let an
+interviewer correct you; the credibility of everything else you claim depends
+on it. Also: **lead with p50, not the 74.8 M msgs/sec throughput** — that
+figure is dominated by messages that early-out on a non-watchlist symbol and
+mostly measures the framing loop.
 
 **The points worth stating:**
 - **Cycle counter, not `clock_gettime`.** Per-message work is tens of ns;
@@ -389,7 +404,10 @@ both were *correctness* bugs, not performance ones:
 
 1. **The recentre policy** (§5) — a fat p99.9 traced to 2 124 window moves per
    replay, each evicting resting orders. The tail was the symptom; silent book
-   corruption was the disease.
+   corruption was the disease. Fixing it took p99.9 from 15 981 ns to 590 ns
+   (**27×**) while leaving p50 and p99 unchanged — which is exactly the
+   signature of removing a rare expensive path rather than speeding up the
+   common one, and worth saying out loud.
 2. **`RefIndex::erase`** (§4) — a sanity check before publishing found 6 of 7
    books ending **crossed**. Root cause was a backward-shift deletion bug
    orphaning entries in collision chains.
@@ -409,8 +427,13 @@ prove.**
 ## Things to have crisp for the interview
 
 - **"What's your p99 latency per message?"** — HFT interviews *start* here.
-  You must have a measured number (see `docs/benchmarks.md`) *and* be able to
-  say what's excluded from it.
+  **426 ns p99, 123 ns p50**, over 862 k applied ITCH messages on a pinned x86
+  core; ~13 ns of that is timer overhead, so net ≈110 ns at p50. Be ready to say
+  what is excluded: no NIC receive, no wire-to-book, KVM guest not bare metal,
+  pre-market flow only.
+- **"Is that good?"** — say the honest thing: competent, not exceptional, and no
+  optimisation pass has been done yet. Then pivot to what the measurement
+  *found*, which is the stronger material.
 - **"Walk me through what happens on an `E` message."** — ref-index lookup
   → recover order (price/side from the stored `RestingOrder`) → find level
   → reduce qty → if zero, unlink from FIFO, free slot, clear bitmap bit if

@@ -87,9 +87,12 @@ Develop on macOS (Apple Silicon), **measure on Linux/x86_64**. The Mac's
 per-message latency, so sub-42 ns work floors to 0. The real percentiles
 require the x86 TSC (GHz resolution). Hence the VM.
 
-### The VM (measured run)
+### The VM (measured runs)
 - **Provider / instance:** DigitalOcean CPU-Optimized, 2 vCPU / 4 GB.
-- **CPU:** Intel Xeon Platinum 8168 @ 2.70 GHz (Skylake-SP).
+- **CPU:** Intel Xeon Platinum **8280** @ 2.70 GHz (Cascade Lake) for the
+  current results. The earlier pre-fix run landed on a Xeon **8168**
+  (Skylake-SP) — same nameplate clock, different microarchitecture. See the
+  caveat in §6 before comparing throughput across the two.
 - **OS / kernel:** Ubuntu 24.04 LTS, 6.8.0-124-generic.
 - **Virtualization:** KVM guest (`pc-i440fx`) — **not bare metal**. Stated
   honestly; a hypervisor sits under this.
@@ -123,30 +126,47 @@ taskset -c 1 ./build-perf/bench_feed
 
 ## 5. Results
 
-> **Status: these are PRE-FIX numbers.** They were measured before the two bugs
-> in §6 and §6b were found, and the p99.9 figure reflects the recentre defect.
-> p50, p99 and throughput are unaffected by either fix (both changed tail
-> behaviour and correctness, not the common-path instruction sequence), but the
-> whole table needs re-measuring on Linux before it is quoted anywhere. The
-> post-fix macOS comparison is in §6; macOS cannot resolve p50 (24 MHz counter,
-> ~42 ns/tick), which is why the Linux re-run is still required.
+Raw output in `vm_results_after.txt` (repo root); the superseded pre-fix run is
+kept in `vm_results_before.txt` for the comparison in §6.
 
-Raw run captured in `vm_results_before.txt` (repo root). Numbers below are
-stable across 3 separate invocations of each binary; the range column is the
-in-harness spread over 5 runs.
+**Environment:** Intel Xeon Platinum 8280 @ 2.70 GHz (Cascade Lake),
+DigitalOcean CPU-Optimized 2 vCPU / 4 GB, Ubuntu 24.04 / 6.8.0-124-generic, KVM
+guest. Calibrated TSC **2.694–2.695 GHz**, matching the nameplate clock — so
+ticks→ns is correct.
 
-Calibrated TSC: **2.694 GHz** — matches the 2.70 GHz Xeon, so ticks→ns is
-correct and the numbers are valid.
+**Sample base:** 862 057 applied messages per run, across 7 symbols.
+**Runs:** 4 invocations × 5 runs = **20 independent measurements**.
 
-### Latency — per-message dispatch + apply (`bench_latency`, taskset -c 1)
-| Percentile | Median of 5 runs | Range across runs | Across 3 invocations |
-|---|---|---|---|
-| p50 | ~120 ns | 117–124 ns | 118.8 / 121.0 / 121.7 |
-| p99 | ~427 ns | 418–439 ns | 423.8 / 428.3 / 432.7 |
-| p99.9 | ~16 µs | 15.9–16.2 µs | 15931 / 15981 / 16031 ns |
+### Latency — per-message dispatch + apply (`bench_latency`, `taskset -c 1`)
 
-### Throughput (`bench_feed`, taskset -c 1, min of 20 iters)
-- **~14.0 ns/msg, ~71.4 M msgs/sec** (13.90–14.06 ns/msg across runs).
+| Percentile | Median | Across all 20 runs |
+|---|---|---|
+| **p50** | **123 ns** | 120.24 – 126.18 |
+| **p99** | **426 ns** | 423.08 – 431.26 |
+| **p99.9** | **590 ns** | 577.47 – 601.98 |
+
+**Instrumentation overhead: 34–36 cycles (12.62 / 13.36 ns).** Eight samples,
+all exactly one of those two values — the empty fenced bracket is deterministic,
+not noisy. This is a floor included in every percentile above, so the engine's
+own dispatch+apply cost is **≈110 ns at p50**. Percentiles are reported raw;
+see §2 for why the overhead is disclosed rather than subtracted.
+
+### Throughput (`bench_feed`, `taskset -c 1`, min of 20 iters)
+**13.3 ns/msg, 74.8 M msgs/sec** (13.17 – 13.39 ns/msg across 4 runs).
+
+> **Why throughput (13 ns) < latency p50 (123 ns) — not a contradiction.**
+> `bench_feed` times *all* 16.3 M framed messages; ~99% are non-watchlist
+> symbols that hit `books.get(locate) → nullptr → return` (a cheap early-out),
+> amortising the average down. `bench_latency` times *only* the 862 k
+> **applied** messages that actually mutate a book — the real per-op cost.
+> Different denominators, both honest. **Quote the p50, not the throughput**:
+> the throughput figure mostly measures the framing loop.
+
+### Book health at end of replay (same runs)
+`not_found = 0` for all 7 symbols, all books uncrossed. Far orders (ITCH's
+\$199,999.99 sentinel, penny stubs, genuinely deep passive orders) total 1 368,
+dominated by TSLA's 821. Correctness and performance measured on the same
+replay, so the numbers describe a book that is actually right.
 
 > **Why throughput (14 ns) < latency p50 (120 ns) — not a contradiction.**
 > `bench_feed` times *all* framed messages; ~99% are non-watchlist symbols
@@ -157,12 +177,21 @@ correct and the numbers are valid.
 
 ### `perf stat` (hardware counters, `bench_feed`)
 ```
-instructions     23_900_443_933
-cache-references    253_694_291
-cache-misses        206_030_644   # 81.21% of all cache refs
-branches          4_560_763_826
-branch-misses        45_071_727   # 0.99% of all branches
+instructions     17_817_911_865
+cache-references    282_157_815
+cache-misses        206_164_332   # 73.07% of all cache refs
+branches          3_488_380_602
+branch-misses        42_304_746   # 1.21% of all branches
 ```
+Instruction count fell 25% versus the pre-fix run (23.9 B → 17.8 B) and the
+cache-miss rate 8 points (81.2% → 73.1%), both from removing the recentre path
+and its O(window) bitmap rebuilds.
+
+A second `perf stat` on `bench_latency` is in the raw output but is **less
+useful for judging the engine**: that binary also runs the 200 k-iteration
+overhead loop and five `std::sort`s of 862 k samples, which is why its
+branch-miss rate is higher (2.17%). Quote `bench_feed`'s counters when
+discussing the decode path.
 - **`cycles` read as 0** on this KVM guest — the cycle PMU is gated even
   though the instruction counter works. So **IPC is not claimed** (it needs
   valid cycles). Honest limitation of the environment.
@@ -171,23 +200,31 @@ branch-misses        45_071_727   # 0.99% of all branches
   *compulsory* (cold), not a locality bug. The hardware prefetcher hides the
   latency (throughput stays at 71 M/s). Branch prediction is healthy (0.99%).
 
-### `perf record` — hot path / tail attribution (`bench_latency`, frame-pointer)
-Children view (who owns total time):
+### `perf record` — where time goes (`bench_latency`, frame-pointer unwinding)
+Children view:
 ```
-main                              73.6%
-  add_order                       19.8%   <- real book-mutation hot path
-  on_directory -> OrderBook ctor   5.5%
-    asm_exc_page_fault             3.2%   <- THE TAIL: first-touch faults
-      handle_mm_fault -> do_anonymous_page -> __alloc_pages -> clear_page
-  istream::read                    5.0%   <- fixture load, OFF the timed clock
+main                             60.7%
+  on_directory -> OrderBook ctor  6.3%
+    asm_exc_page_fault            4.3%   <- startup arena commit, NOT in the
+      do_anonymous_page -> clear_page_erms      latency histogram (see below)
+  istream::read                   5.0%   <- fixture load, off the timed clock
 ```
 Self view (where steady-state cycles go):
 ```
-main                  38.1%   (decode loop + dispatch, inlined)
-add_order             19.5%   (book mutation)
-std::__introsort_loop  6.8%   (std::sort of samples — bench bookkeeping,
+main                  43.9%   (decode loop + dispatch, inlined)
+add_order             13.2%   (book mutation)
+std::__introsort_loop  7.8%   (std::sort of samples — bench bookkeeping,
                                outside the timed region, not engine cost)
 ```
+`add_order` self time fell from 19.5% pre-fix to 13.2%, which is the recentre
+path leaving the hot function.
+
+**The page-fault chain is real but is not in the histogram.** It is the kernel
+committing each book's ~4 MB of arrays on first touch, inside the `OrderBook`
+constructor, which runs from the `R` (directory) branch of `decode_message` —
+and that branch returns *before* the `if constexpr (Timing)` block. It is
+startup cost, correctly excluded from per-message numbers, and not something to
+"fix". An earlier version of this document mistook it for the tail; see §6c.
 **Note on reading this profile — recenter is invisible here but IS the tail.**
 `recenter()` is called from inside `add_order` and is inlined under LTO, so its
 cost is attributed to `add_order`/`main` rather than appearing as its own frame.
@@ -262,14 +299,35 @@ production, previous close) and never moves. The window widened from 4 096 to
 tiers to three. Out-of-window orders take the existing `is_far` path.
 `recenter()`, `rebuild_bitmap()` and `evict_level()` are retired.
 
-Measured effect on macOS/arm64 (same fixture, same harness):
+Measured effect on Linux/x86_64 (same fixture, same harness):
 
-| | before | after |
-|---|---|---|
-| p99.9 | 8 041 ns | **208 ns** |
-| samples ≥ 5 µs | ~2 150/run | **0–50/run** |
-| recentres | 2 124 | **0** |
-| orders evicted | ~14 000 | **0** |
+| | before | after | |
+|---|---|---|---|
+| **p99.9** | 15 981 ns | **590 ns** | **27× lower** |
+| p99 | 427 ns | 426 ns | unchanged |
+| p50 | ~120 ns | 123 ns | unchanged |
+| samples ≥ 5 µs | ~2 150/run | ~225/run | 10× fewer |
+| recentres | 2 124 | **0** | eliminated |
+| orders evicted | ~14 000 | **0** | eliminated |
+| throughput | 14.0 ns/msg | 13.3 ns/msg | see caveat |
+| instructions | 23.9 B | 17.8 B | 25% fewer |
+
+p50 and p99 are unchanged, as expected — the fix removed a rare expensive path,
+it did not alter the common-path instruction sequence. The tail is where a
+window move showed up, and that is what collapsed.
+
+> **Caveat on the throughput comparison.** DigitalOcean provisioned a **Xeon
+> 8168** for the pre-fix run and a **Xeon 8280** for the post-fix run — same
+> 2.70 GHz nameplate, different microarchitecture (Skylake-SP vs Cascade Lake).
+> Part of the ~5% throughput gain may be the newer silicon rather than the fix,
+> so it should not be claimed outright. The instruction-count drop (25%) is
+> hardware-independent and *is* attributable. The 27× tail reduction is far too
+> large for any CPU difference to explain.
+
+The residual ~225 samples ≥ 5 µs per run (0.026% of 862 k) are OS scheduling
+noise, not engine cost. Confirmation: running the same binary under
+`perf record` raised that count to ~730/run — the profiler's own sampling
+interrupts — while p50 and p99 barely moved. Interference, not the code.
 
 ---
 
@@ -367,13 +425,52 @@ timed region — is more instructive than the eventual answer.
 
 ---
 
-## 8. Open items
+## 8. How to state this honestly
 
-1. **Re-measure on Linux/x86 post-fix.** §5 is stale. Needs a CPU-Optimized
-   droplet, `taskset -c 1`, `./build.sh perf`. This is the number for the CV.
-2. **Capture `perf stat` again** — the pre-fix profile is no longer
-   representative now that the recentre path is gone.
-3. **Consider a staleness signal.** `not_found_` is currently a counter; in a
-   live system it would trip a per-symbol health flag that stops quoting and
-   triggers a GLIMPSE re-snapshot (ITCH has no in-feed snapshot). Worth building
-   if the engine grows a strategy layer.
+The defensible one-line claim:
+
+> **p50 123 ns / p99 426 ns per-message dispatch + apply**, over 862 k applied
+> Nasdaq TotalView-ITCH 5.0 messages across 7 symbols, on a pinned x86 core at
+> 2.694 GHz. Instrumentation overhead (34–36 cycles) measured and included;
+> net ≈110 ns.
+
+Calibration, so this is neither oversold nor undersold:
+
+- **~110 ns for a hash lookup + level access + list unlink + three-tier bitmap
+  update is competent, not exceptional.** At 2.7 GHz that is ~300 cycles,
+  consistent with 2–3 cache misses plus real work. A tuned production book on
+  bare metal is typically in the 50–150 ns range for the same operation, and
+  specialists go lower. This sits in a believable part of that range with no
+  optimisation pass yet done.
+- **The throughput number is the weaker one.** 74.8 M msgs/sec is dominated by
+  the ~99% of messages that early-out on a non-watchlist symbol. Leading with
+  it invites a fair objection. Lead with p50.
+- **What is actually strong is the methodology**, and that is the part worth
+  defending: a distribution rather than an average, 20 runs with the spread
+  disclosed, timer overhead quantified rather than hidden, and correctness
+  (`not_found = 0`, no crossed books) verified on the same replay that produced
+  the timings.
+- **The strongest single item is not a number at all** — it is that the
+  measurement process found two real bugs (§6, §6b), and that the reasoning
+  which isolated them is reproducible and written down.
+
+---
+
+## 9. Open items
+
+1. **An optimisation pass on the common path.** Everything so far removed a
+   pathology; nothing has yet made the 110 ns itself faster. `add_order` is 13%
+   of self time and the cache-miss rate is 73% — the ref-index probe is the
+   obvious first suspect (layout, prefetch, or a cheaper mix). This would turn
+   "I fixed a defect" into "I profiled and optimised the hot path", which is a
+   stronger claim.
+2. **A full-session fixture.** The current one ends at 09:30 ET, so the
+   end-of-day invariant (book empty after the closing `S` message) cannot be
+   asserted, and all numbers come from pre-market flow.
+3. **A staleness signal.** `not_found_` is currently a counter; in a live system
+   it would trip a per-symbol health flag that halts quoting and triggers a
+   GLIMPSE re-snapshot (ITCH carries no in-feed snapshot). Worth building if the
+   engine grows a strategy layer.
+4. **Bare-metal comparison.** Everything here is a KVM guest. A tuned bare-metal
+   run with isolcpus and hugepages would show how much of the tail is the
+   hypervisor.
