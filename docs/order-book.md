@@ -1,7 +1,7 @@
 # Module: Order Book
 
 **File(s):** `include/hft/orderbook.hpp`, `src/orderbook.cpp`
-**Phase:** 1 · **Status:** 🟩 implemented (apply path + queries + re-centering complete; benchmarks pending)
+**Phase:** 1 · **Status:** 🟩 implemented (apply path + queries + fixed-window levels + three-tier touch bitmap; benchmarked, see `docs/benchmarks.md`)
 
 ## Responsibility
 Maintain the current state of the limit order book for each symbol, and
@@ -81,14 +81,17 @@ and an `is_far` flag. This is deliberate: `E`/`X`/`D`/`U` arrive with only a
 
 `is_far` records, at insert time, whether the order was placed in a level
 (near) or parked outside the window (far). Teardown **reads** this bit rather
-than re-deriving far/near from `index_of(price)` against the *current* base:
-an order's far/near status is fixed when it is added, but a later re-center
-slides `base_price_`/`ring_origin_`, so a far order can drift inside the
-window (or vice versa) and the two frames disagree. Recomputing at teardown
-would misclassify — take the near branch for an order never linked into a
-level, corrupting that level's aggregate and unlinking whatever rested there.
-Storing insertion-time truth and reading it back makes teardown symmetric
-with insertion and immune to base motion.
+than re-deriving far/near from `index_of(price)`, so insertion and teardown are
+symmetric by construction: whatever the add did, the remove undoes.
+
+With a fixed `base_price_` the two would agree anyway — the window never moves,
+so `index_of` gives the same answer at teardown as at insert. The flag was
+load-bearing under the old sliding-window design, where a re-centre could slide
+a far order inside the window (or vice versa) and recomputing at teardown would
+take the near branch for an order never linked into a level, corrupting that
+level's aggregate. It is kept because storing insertion-time truth is the more
+robust contract: it stays correct if the window ever becomes movable again, and
+it costs one bit in a struct that has padding to spare.
 
 **Two distinct sentinels.** `kNullIdx` (`UINT32_MAX`) is the *null pool link*
 — an empty free list, an unlinked list end, an empty level's `head_idx`. It
@@ -106,16 +109,21 @@ closed-addressing all show up here). Sized to a power of two, comfortably
 larger than `pool_capacity` (currently `pool_capacity * 2`, ~50% max load)
 so open addressing stays healthy.
 
-### (c) Price levels — dense ring array near the touch
+### (c) Price levels — dense fixed-window array
 Per side, a contiguous `std::vector<Level>` (`bid_levels_`, `ask_levels_`)
 of `window` entries (`window` a power of two → `mask_ = window - 1`),
-indexed by **tick offset from `base_price_`** through a **circular
-buffer**:
+indexed by **tick offset from a fixed `base_price_`**:
 
 ```
-offset = price - base_price_          // logical, monotonic in price
-slot   = (offset + ring_origin_) & mask_   // physical ring slot
+offset = price - base_price_          // monotonic in price; also the bitmap index
 ```
+
+`base_price_` is supplied at construction and **never moves**. `BookSet`
+computes it as `reference_price - window/2` from a per-symbol reference —
+hardcoded per symbol for the replay fixture, sourced from the previous
+session's close in production. `window` is 32 768 ticks, so the book spans
+±\$163.84 around the reference (≈±27% on a \$600 stock, comfortably outside
+LULD halt bands).
 
 Array indexing + cache locality is the reason for the array over a tree.
 Each `Level` holds `total_qty`, `order_count`, and `head_idx`/`tail_idx`
@@ -125,73 +133,71 @@ orders append at the **tail** → **price-time (FIFO) priority** within a
 level, O(1). Deletes unlink from the middle in O(1) via `prev_idx`/
 `next_idx`.
 
-**Re-centering (sliding window).** Prices drift; the array covers a band
-around the inside. `add_order` triggers `recenter` when an incoming price
-falls outside the window (`index_of` returns `kNoLevel`) *but* is still
-within a window's width of the current center — i.e. a genuine drift, not a
-wild outlier. (A price beyond that guard is treated as a far order, below,
-rather than dragging the whole window to it.) `recenter(new_center)` rebases
-so the window is centered on `new_center` (`new_base = new_center -
-window/2`), then re-derives the level index.
+**Why fixed and not a sliding ring — this design was reversed.** The book
+originally used a circular buffer whose `ring_origin_` advanced as price
+drifted, with `add_order` triggering a re-centre whenever an incoming price
+landed outside the window. That trigger was the defect: a single deep resting
+order — a standing bid well below the market — dragged the whole window onto
+itself, **evicting the near-mid book**, and the next normal add dragged it
+back. Measured over one session: **2 124 re-centres, ~14 000 resting orders
+evicted**, and an equal number of later lookups failing. It also owned the
+entire latency tail, since each re-centre ran an O(window) `rebuild_bitmap`;
+removing it took p99.9 from 8 041 ns to 208 ns. Full write-up in
+`docs/benchmarks.md` §6.
 
-`recenter` has two paths, chosen by how far the base moves (`delta`):
+A sliding window is legitimate where price ranges are genuinely unbounded
+(futures, FX) or memory is tight — but it must follow **the touch**, with
+hysteresis, never a single incoming order. For penny-tick equities the memory
+saved does not justify the complexity: 32 768 levels × 24 B × 2 sides is
+≈1.6 MB per symbol.
 
-- **Partial slide** (`|delta| < window`): only the `|delta|` slots that
-  scroll off the trailing edge are vacated. Each is `evict_level`'d (its
-  resting orders freed from the pool and erased from `ref_index_`, counted
-  in `evicted_`) and reset to an empty `Level{}`; `base_price_` and
-  `ring_origin_` advance by `delta` (mod `window`) so surviving levels keep
-  their price↔slot mapping for free — no array shift. Cost is O(|delta|),
-  and `|delta|` is a tick or two per event, not thousands.
-- **Full clear** (`|delta| ≥ window`): the whole old window has scrolled
-  out of view, so every level is evicted, all levels/bitmaps are zeroed,
-  and `ring_origin_` resets to 0. O(window), but rare.
-
-After a slide the touch bitmap is recomputed by `rebuild_bitmap`, an
-O(window) rescan that re-derives every set bit from the non-empty levels.
-(Rebuilding wholesale rather than incrementally clearing the vacated bits is
-the simpler correct choice; it is off the common hot path since re-centers
-are infrequent, and is a candidate for incremental clearing if the
-benchmark says it matters.) Re-centering count is tracked (`recenters_`).
-
-**Far orders.** Orders whose price is outside the near-touch band (and
-outside the re-center guard) still live in `pool_` + `ref_index_` (so
-`E`/`X`/`D`/`U` on them still work) but are **not** placed in a level and
-carry no touch bit. Nobody reads depth thousands of ticks off the touch on
-the hot path. Counted (`far_orders_`) so a mis-sized band is observable.
-`remove_at_slot` recognizes a far order by its stored `is_far` flag (set at
-insert time, not recomputed from the current window) and tears it down with
-just a slot-free + ref-erase, no level bookkeeping.
+**Far orders.** Orders priced outside the window still live in `pool_` +
+`ref_index_` (so `E`/`X`/`D`/`U` on them still resolve) but are **not** placed
+in a level and carry no touch bit. In the real feed these are ITCH's
+\$199,999.99 "no price" sentinel, penny stubs, and genuinely deep passive
+orders — none of which a market maker quotes against. Counted (`far_orders_`)
+so a mis-sized window is observable. `remove_at_slot` recognises a far order by
+its stored `is_far` flag and tears it down with just a slot-free + ref-erase,
+no level bookkeeping.
 
 ### (d) Touch bitmap — hierarchical non-empty-level bitset
-Per side, a two-tier bitmap marking which levels are non-empty, so
+Per side, a **three-tier** bitmap marking which levels are non-empty, so
 `best_bid`/`best_ask` and the touch-refresh on delete are **O(1)**, not an
 O(window) scan:
 
-- `bid_bits_[64]` / `ask_bits_[64]`: 64 words × 64 bits = 4096 detail
+- `bid_bits_[512]` / `ask_bits_[512]`: 512 words × 64 bits = 32 768 detail
   bits, one per level. Bit set ⇔ that level has ≥1 resting order.
-- `bid_summary_` / `ask_summary_`: one `uint64_t`; bit *j* set ⇔ detail
-  word *j* is non-zero. 64 summary bits cover all 64 detail words.
+- `bid_mid_[8]` / `ask_mid_[8]`: 8 words × 64 bits = 512 bits; bit *j* set ⇔
+  detail word *j* is non-zero.
+- `bid_summary_` / `ask_summary_`: one `uint64_t`; bit *k* set ⇔ mid word *k*
+  is non-zero. 8 bits used of 64.
 
-The fixed two-tier size caps `window` at **4096** (`offset >> 6` must land
-in `[0, 64)`). This is comfortably larger than any near-touch band worth
-keeping dense; a larger band belongs in the far-order bucket, not a wider
-bitmap.
+Each tier narrows the search 64-fold, so *n* tiers reach 64ⁿ levels: two tiers
+cap `window` at 4 096 (only ±\$20.48 at penny ticks — the original sizing, and
+too narrow, which is what forced the sliding window in the first place); three
+tiers reach 262 144, so the 32 768 window fits with room to spare. The
+constructor asserts `window <= 32768` to keep `offset >> 6` inside
+`bits_[512]`.
 
-The bitmap is indexed by **logical offset**, not ring slot, so bit order
-== price order (see "Ring + bitmap indexing" below). Finding the best
-level is two `clz`/`ctz` instructions:
-- **best bid** (highest set bit): top set bit of `summary` → top set bit
-  of that detail word.
-- **best ask** (lowest set bit): bottom set bit of `summary` → bottom set
-  bit of that detail word.
+The bitmap is indexed by the same `offset` as the level array, so bit order ==
+price order. Finding the best level is three `clz`/`ctz` instructions:
+- **best bid** (highest set bit): top set bit of `summary` → top set bit of
+  that mid word → top set bit of that detail word.
+- **best ask** (lowest set bit): the same walk with `ctz` at each tier.
 
 The bitmap is the **source of truth** for the touch — there are no cached
-`best_*_idx_` scalars to keep consistent. `add_order` sets a bit when a
-level goes empty→non-empty; `remove_at_slot` clears a bit when a level goes
-non-empty→empty (and clears the summary bit when its detail word hits
-zero). `best_bid`/`best_ask` return `kInvalidPrice` when their side's
-summary word is zero (empty book).
+`best_*_idx_` scalars to keep consistent. `best_bid`/`best_ask` return
+`kInvalidPrice` when their side's summary word is zero (empty book).
+
+**The set/clear asymmetry is the crux of the structure.** `add_order` sets the
+detail bit when a level goes empty→non-empty and sets the mid and summary bits
+above it **unconditionally** — adding always makes a word non-zero.
+`remove_at_slot` clears the detail bit, then clears the mid bit **only if that
+whole detail word hit zero**, then the summary bit **only if that whole mid word
+hit zero** — removing only *sometimes* empties a word. Getting that nesting
+wrong either reports a phantom price (bit left set) or loses a live level (bit
+cleared too eagerly). `tests/test_orderbook.cpp` pins both directions at every
+tier, including the "sibling still occupied in the same word" cases.
 
 ## Observability counters
 The book keeps a handful of monotone `uint64_t` counters, cheap to bump and
@@ -201,28 +207,39 @@ silent:
 | Counter | Bumped when |
 |---|---|
 | `pool_full_drops_` | `alloc_slot` fails (pool exhausted) → order dropped |
-| `far_orders_` | an add lands outside the band (net live far orders) |
-| `recenters_` | a `recenter` runs |
-| `evicted_` | a resting order is dropped by a re-center's eviction |
+| `far_orders_` | an add lands outside the window (net live far orders) |
 | `not_found_` | an `E`/`X`/`D`/`U` names a `ref` not in the index |
 
 `not_found_` is the important correctness tripwire: under a clean, in-order
-replay it should stay **zero**. A nonzero value means either a feed gap
-(missed the `A`/`F` that introduced the ref) or a routing bug (e.g. a `P`
-trade wrongly fed into the book). `pool_full_drops_` and `far_orders_` /
-`evicted_` staying near zero is the signal that `pool_capacity` and `window`
-are sized correctly for the symbol.
+replay it should stay **zero**, and on the 500 MB fixture it does. A nonzero
+value means a feed gap (missed the `A`/`F` that introduced the ref), a routing
+bug (e.g. a `P` trade wrongly fed into the book), or — as it turned out — a bug
+in the book itself. It earned its keep: a nonzero `not_found_` was the thread
+that led to the `RefIndex::erase` defect described in `docs/benchmarks.md` §6b,
+which was silently orphaning entries in hash collision chains and leaving books
+crossed.
 
-## Ring + bitmap indexing — why the two use different indices
-The **levels** are a ring (physical slot = `(offset + ring_origin_) &
-mask_`) so re-centering is a cheap origin bump instead of an array shift.
-But after a recenter the ring wraps, so **physical slot order ≠ price
-order** across the wrap — you cannot `clz` over physical slots to find the
-best *price*. The **bitmap** is therefore indexed by **logical offset**
-(monotonic in price): highest set bit = highest price = best bid, lowest
-set bit = best ask, regardless of where the ring origin currently sits.
-Level lookup uses the ring slot; touch lookup uses the offset bit. Both
-derive from the same `offset`.
+In a live system this counter would not merely count. Crossing a threshold
+would trip a per-symbol health flag that **stops quoting that symbol** and
+triggers a snapshot recovery — ITCH carries no in-feed snapshot, so recovery
+means a GLIMPSE request (a separate TCP service returning the full book plus
+the sequence number it corresponds to) and replaying forward from there. You
+never repair a diverged book in place; you rebuild it.
+
+`pool_full_drops_` staying zero and `far_orders_` staying small are the signals
+that `pool_capacity` and `window` are sized correctly for the symbol.
+
+## Indexing — one index space
+Levels and the touch bitmap share a single index: `offset = price -
+base_price_`, monotonic in price and fixed for the life of the book. Highest
+set bit = highest price = best bid; lowest set bit = best ask.
+
+This is a simplification over the previous ring design, which needed *two*
+index spaces — a physical ring slot for levels and a logical offset for the
+bitmap — because the ring wrapped and physical slot order stopped matching
+price order. Those two had to be kept in agreement by hand, and a mismatch
+between them was a live source of phantom-price bugs. Removing the ring
+removed the whole category.
 
 ## Multi-symbol
 ITCH is a **single stream carrying all ~8,000 Nasdaq symbols**, not one
@@ -311,22 +328,31 @@ factor, layout), not to decide whether to move off a `std::map` baseline.
 
 ## Done checklist
 - [x] Order pool + LIFO free list (`alloc_slot` / `free_slot`)
-- [x] `ref_index_` (open-addressed `ref → slot`)
-- [x] `index_of` (ring offset→slot, far-order detection)
+- [x] `ref_index_` (open-addressed `ref → slot`, backward-shift erase)
+- [x] `index_of` (fixed-window offset, far-order detection)
 - [x] `add_order` (A/F): alloc, fill, tail-link (FIFO), ref-index insert,
-      set touch bit; far-order path; recenter trigger
+      set touch bits (all three tiers); far-order path
 - [x] `delete_order` (D) → `remove_at_slot`: unlink, level decrement, free
-      slot, ref-index erase, clear touch bit on empty
+      slot, ref-index erase, cascading touch-bit clear on empty
 - [x] `execute_order` (E/C), `cancel_order` (X) → shared `reduce`: reduce
       shares; remove when it hits zero
 - [x] `replace_order` (U = read old side → delete → add new ref, loses time
       priority)
-- [x] `best_bid` / `best_ask` (bitmap `clz`/`ctz`), `qty_at`
-- [x] `recenter`: partial slide + full-clear paths, eviction of scrolled-out
-      orders, bitmap rebuild
+- [x] `best_bid` / `best_ask` (three-tier bitmap `clz`/`ctz`), `qty_at`
+- [x] Fixed window with per-symbol reference price (replaced sliding ring;
+      see `docs/benchmarks.md` §6)
 - [x] Tests: partial execute, partial cancel, delete-empties-level, `U`
-      re-add, far-order round-trip, recenter (in `tests/test_orderbook.cpp`)
-- [ ] Cross-check: replay a full session, assert book empty after end-of-
-      day `S` message
-- [ ] Benchmark apply + best query (Linux, pinned)
+      re-add, far-order round-trip (above/below window, execute-by-ref,
+      slot reuse), window boundaries, three-tier bitmap set/clear cascade
+      at every tier (`tests/test_orderbook.cpp`)
+- [x] Tests: `RefIndex` collision-chain integrity + differential fuzz against
+      `std::unordered_map` (`tests/test_ref_index.cpp`)
+- [x] Cross-check: full 500 MB replay leaves all 7 books uncrossed with
+      `not_found_ == 0`, matching an independent scan of the raw ITCH bytes
+- [x] Benchmark apply + best query (Linux, pinned) — first pass done; needs
+      re-running post-fix, see `docs/benchmarks.md` §8
+- [ ] Assert book empty after end-of-day `S` message (needs a full-session
+      fixture; the current one ends at 09:30 ET)
+- [ ] Staleness signal: promote `not_found_` from counter to per-symbol health
+      flag that halts quoting and triggers snapshot recovery
 - [ ] (Later) per-level queue-position view for the execution simulator

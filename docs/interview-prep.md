@@ -124,6 +124,42 @@ probe chains valid. Tombstones are simpler but accumulate and slow probes;
 backward-shift keeps the table clean at the cost of more work per erase.
 We chose backward-shift.
 
+**The bug this actually had (the best story in this document).** The
+backward-shift loop computed distances through a lambda capturing `hole` by
+reference, while reassigning `hole` inside the loop. After the first shift the
+comparison measured from a different origin than it started with, so entries
+that needed relocating were skipped — and `find`, which stops at the first
+empty slot, then hit the stale hole and gave up. Refs beyond it became
+permanently unreachable.
+
+Minimal case: three refs colliding into one bucket, erase the first, the
+*third* is orphaned. It needs a probe chain of length ≥ 3 to appear, so it
+survived every hand-written unit test.
+
+What it did on a real replay: 543 orders whose delete/execute could no longer
+resolve stayed resting forever, leaving **6 of 7 books crossed** — TSLA showing
+bid \$644.00 against ask \$624.50. A market maker quoting off that book is
+quoting a \$19.50 phantom arbitrage.
+
+Two things are worth saying about how it was found. First, the symptom was a
+*latency* investigation — the crossed books turned up only because a full-fixture
+replay was being sanity-checked before publishing benchmark numbers. Second,
+what settled it was **differential testing**: an independent scan of the raw
+ITCH bytes proved the feed contained zero messages for unknown refs, which meant
+the data was self-consistent and the book had to be losing orders itself. The
+fix is verified by a fuzz test against `std::unordered_map` that checks every
+live entry after each of 20 000 operations.
+
+**The correct invariant:** shift `slots_[j]` into `hole` only when its ideal
+bucket falls *outside* the cyclic interval `(hole, j]` — recompute both
+distances from the *current* hole every iteration, since the hole moves.
+
+**Follow-up you should expect:** "Why not tombstones?" → simpler and immune to
+this class of bug, but they accumulate, lengthen probes, and need periodic
+rehashing. Backward-shift keeps probes short at the cost of exactly the
+subtlety described above. Knowing *which* bug each design invites is the
+answer they want.
+
 **The `ref == 0` subtlety (great story):** empty slots are marked
 `ref == 0`, so 0 is an illegal key. **Nasdaq's Trade (P) message carries
 ref = 0** (hidden-order executions, zeroed for anonymity) — but `P` is a
@@ -135,51 +171,68 @@ engineering.
 
 ---
 
-## 5. Dense ring-array of price levels, not `std::map<price, qty>`
+## 5. Dense fixed-window array of price levels, not `std::map<price, qty>`
 
-**Decision:** Per side, a contiguous array of `Level` structs indexed by
-tick offset from a moving `base_price_`, as a **circular buffer**. Price is
-already an integer tick, so price→level is array indexing, not a tree
-lookup.
+**Decision:** Per side, a contiguous array of `Level` structs indexed by tick
+offset from a **fixed** `base_price_` set at construction from a per-symbol
+reference price. Price is already an integer tick, so price→level is array
+indexing, not a tree lookup. Window is 32 768 ticks (±\$163.84 around the
+reference, ≈±27% on a \$600 stock). Prices outside it are "far": tracked in the
+pool and ref index so their later delete/execute resolves, but given no level
+and no touch bit.
 
-**Why:**
-- `std::map` (red-black tree) is the "correct but slow" baseline: O(log n)
-  per update, **a pointer-chase per node** (terrible cache behavior), and a
-  heap allocation per new level. Fine for a lot of software, not for a
-  latency-critical hot path.
-- An array indexed by tick is **O(1) update and O(1) best** (with the
-  bitmap, below), and **cache-friendly** — levels near the touch are
-  contiguous. Since `price_t` is an integer tick, the index is just
-  `price - base_price_`.
+**Why an array at all:**
+- `std::map` (red-black tree) is the "correct but slow" baseline: O(log n) per
+  update, **a pointer-chase per node** (terrible cache behavior), and a heap
+  allocation per new level.
+- An array indexed by tick is **O(1) update and O(1) best** (with the bitmap,
+  below), and **cache-friendly** — levels near the touch are contiguous.
 
-**Why a *ring* (circular buffer), not a flat array:** prices drift over the
-day. A fixed window that rejects out-of-range prices is a toy. A flat array
-that you shift when price moves costs an O(window) memcpy per re-center.
-The ring makes **re-centering a cheap `ring_origin_` bump** — advance the
-origin, clear only the vacated slots (O(distance moved), and distance is a
-tick or two per event). This is the production-grade version of the sliding
-window.
+**Why fixed, not a sliding ring — and this project got it wrong first.** The
+original design was a circular buffer whose origin advanced as price drifted,
+which sounds like the sophisticated choice. It wasn't, for one specific reason:
+**the trigger was wrong.** `add_order` re-centred the window whenever an
+incoming order landed outside it. So a single deep resting order — someone's
+standing bid \$25 below the market — dragged the entire window onto itself,
+**evicting the near-mid book**, and the next normal add dragged it back.
+Measured on a real session: **2 124 recentres per replay, ~14 000 resting orders
+evicted**, and an equal number of subsequent lookups failing.
 
-**Tradeoff:** the ring adds indexing complexity (`(offset + ring_origin_)
-& mask_`) and the wrap means **physical slot order ≠ price order** — which
-is exactly why the touch bitmap is indexed by *offset*, not ring slot (see
-below). Far-from-touch orders don't get a level at all (kept only in the
-pool + ref index) — nobody reads depth thousands of ticks out on the hot
-path, and it's counted (`far_orders_`).
+It was also the entire latency tail. Each recentre ran `rebuild_bitmap()`, an
+O(window) rescan, and the counts matched 1:1 — 2 124 recentres against ~2 150
+samples over 5 µs. Removing it took **p99.9 from 8 041 ns to 208 ns**.
 
-**When `std::map` would win:** if you genuinely need full, unbounded depth
-with prices anywhere, or the book is so sparse the array wastes memory. For
-a near-touch-focused HFT book, the array/bitmap wins decisively.
+**What real desks do:** most equities books use a fixed absolute price array
+sized from the previous close, because the memory is irrelevant (a few MB) and
+it removes an entire class of bug. Sliding windows appear where price ranges are
+genuinely unbounded (futures, FX) or memory is constrained (FPGA) — and there
+the window follows **the touch**, with hysteresis, never a single incoming
+order. An out-of-window order goes to the overflow path; it is not a reason to
+move the window.
+
+**Tradeoff:** the fixed window can't follow a symbol that moves more than ±27%
+intraday. That is the correct behaviour — past LULD halt bands the exchange has
+already stopped trading, and "stop quoting" beats "silently reorganise your book
+mid-event."
+
+**When `std::map` would win:** genuinely unbounded depth at arbitrary prices, or
+a book so sparse the array wastes memory. For a near-touch HFT book the
+array/bitmap wins decisively.
+
+**Follow-up you should expect:** "How big is the array, and what if price leaves
+it?" → 32 768 levels × 24 B × 2 sides ≈ 1.6 MB per symbol; outside it, orders
+take the far path and are counted (`far_orders_`), and in production a symbol
+whose touch approached the edge would be flagged rather than re-windowed.
 
 ---
 
 ## 6. Hierarchical bitmap for O(1) best-bid/ask, not a scan or a scalar
 
-**Decision:** Per side, a two-tier bitset marking which levels are
-non-empty: 64 detail words (`bits_[64]` = 4096 bits, one per level) + a
-64-bit summary word (bit *j* = "detail word *j* is non-zero"). Best
-bid/ask = a couple of `clz`/`ctz` (count-leading/trailing-zeros)
-instructions.
+**Decision:** Per side, a **three-tier** bitset marking which levels are
+non-empty: 512 detail words (`bits_[512]` = 32 768 bits, one per level) → 8 mid
+words (`mid_[8]`, bit *j* = "detail word *j* is non-zero") → one 64-bit summary
+(bit *k* = "mid word *k* is non-zero"). Best bid/ask = three `clz`/`ctz`
+(count-leading/trailing-zeros) instructions.
 
 **Why this is the crux question — "how do you find the best price?":**
 - **Naive scalar cache** (`best_bid_idx_`) alone: O(1) to *read*, but when
@@ -189,31 +242,40 @@ instructions.
 - **Scan the level array** every query: O(window). Worse.
 - **Ordered tree** (`std::map::begin()`): O(1) read but O(log n) erase and
   bad cache behavior — the thing the array design exists to avoid.
-- **Bitmap:** "find highest/lowest non-empty level" = "find highest/lowest
-  set bit among 4096." The summary tier means you jump straight to the
-  right 64-bit word (one `clz`) instead of scanning up to 64 words, then
-  find the bit within it (one more `clz`). **O(1), a handful of
-  instructions, no data-dependent loop.** Composes perfectly with the dense
-  array because it's just a parallel bit-index over the same level indices.
+- **Bitmap:** "find highest/lowest non-empty level" = "find highest/lowest set
+  bit among 32 768." Each tier narrows the search by a factor of 64 with one
+  `clz`, so three dependent loads and three instructions land on the exact bit.
+  **O(1), no data-dependent loop.** Composes perfectly with the dense array
+  because it's just a parallel bit-index over the same level indices.
 
-**Key invariant to state:** "summary bit *j* set ⟺ `bits_[j]` != 0." Adds
-set a detail bit + (unconditionally) its summary bit; deletes clear the
-detail bit + the summary bit *only if the whole word hit zero* (the
-asymmetry: adding always makes a word non-zero; removing only *sometimes*
-empties it). A bug here shows up as a wrong best price — so it's the first
-thing tests should pin.
+**Key invariant to state:** "a tier's bit is set ⟺ the word below it is
+non-zero," at every level. Adds set the detail bit and unconditionally set the
+mid and summary bits above it. Deletes clear the detail bit, then clear the mid
+bit *only if that whole detail word hit zero*, then the summary bit *only if
+that whole mid word hit zero*. **The asymmetry is the crux:** adding always
+makes a word non-zero, so it can set upward unconditionally; removing only
+*sometimes* empties a word, so the clear must cascade conditionally. Get that
+nesting wrong and you either report a phantom price (bit left set) or lose a
+live level (bit cleared too eagerly). This is the first thing tests should pin —
+there are seven tests here doing exactly that, including "sibling in the same
+word still occupied" at each tier.
 
-**Why indexed by logical offset, not ring slot:** `clz`/`ctz` find the
-highest/lowest *bit*, which must correspond to highest/lowest *price*.
-Offsets are monotonic in price; ring slots wrap (physical order ≠ price
-order after a re-center). So the bitmap uses `offset = price - base_price_`,
-while the level array uses the ring slot — both derived from the same
-offset. This offset-vs-ring split is a favorite "did you actually think
-about the wrap?" follow-up.
+**Why 32 768 = 512 × 64, and why three tiers:** two tiers cover 64 × 64 = 4 096
+levels, which is only ±\$20.48 at penny ticks — far too narrow for a \$600 stock
+(measured: it forced hundreds of window moves per session). Widening the window
+to ±\$163.84 needs 512 detail words, and 512 exceeds what a single 64-bit
+summary can index, hence the middle tier. **The general rule:** each tier
+multiplies reach by 64, so *n* tiers cover 64ⁿ levels — 3 tiers reach 262 144,
+well past anything needed here. Standard hierarchical-bitmap trick, also used in
+OS schedulers, buddy allocators, and `find-first-set` structures.
 
-**Why 4096 = 64×64 exactly:** two tiers cover 64×64 bits. More levels →
-add a third tier. This is the standard hierarchical-bitmap trick (also seen
-in schedulers, allocators, `find-first-set` structures).
+**Follow-up you should expect:** "Why not just cache `best_bid_idx_`?" → because
+the expensive case isn't reading the touch, it's *re-finding* it when the touch
+level empties. A cached scalar makes that an O(window) scan. The bitmap makes it
+three instructions. A cached scalar *on top of* the bitmap is a reasonable later
+optimisation — the touch is read far more often than it moves — but it needs
+every path that empties a level to maintain it, which is where that design gets
+subtly wrong.
 
 ---
 
@@ -297,23 +359,83 @@ invariants.
 
 ---
 
+---
+
+## 11. Measuring honestly — and what measurement found
+
+**Decision:** Per-message latency is measured with the CPU cycle counter, fenced,
+compiled in only for the benchmark build, over ~862 k applied messages of real
+ITCH, reported as a distribution across 5 runs. Full methodology in
+`docs/benchmarks.md`.
+
+**The points worth stating:**
+- **Cycle counter, not `clock_gettime`.** Per-message work is tens of ns;
+  a ~25 ns clock read would dominate what it measures.
+- **`rdtsc` is fenced** (`lfence; rdtsc; lfence`). `rdtsc` is not serialising —
+  unfenced, the CPU reorders work across it and the measurement window doesn't
+  bracket the code. Expect to be asked this directly.
+- **Zero cost in production.** The decode path is templated on `<bool Timing>`;
+  `decode<false>` compiles the instrumentation *out* via `if constexpr` — not
+  branched around, absent from the emitted code.
+- **Median of 5 runs with the range**, never the mean and never pooled samples —
+  pooling would hide exactly the run-to-run variance the runs exist to show.
+- **Know what you did NOT measure:** no NIC receive, no wire-to-book, KVM guest
+  rather than bare metal, and `cycles` PMU gated on that guest so **IPC is not
+  claimed.** Naming your own limits is worth more than one more digit.
+
+**Two bugs that only a measurement caught — this is the story to lead with.**
+Both were found because a latency number was being prepared for publication, and
+both were *correctness* bugs, not performance ones:
+
+1. **The recentre policy** (§5) — a fat p99.9 traced to 2 124 window moves per
+   replay, each evicting resting orders. The tail was the symptom; silent book
+   corruption was the disease.
+2. **`RefIndex::erase`** (§4) — a sanity check before publishing found 6 of 7
+   books ending **crossed**. Root cause was a backward-shift deletion bug
+   orphaning entries in collision chains.
+
+**The methodology point an interviewer will actually care about:** the first
+hypothesis for the tail was wrong, and `perf` *reinforced* the wrong answer — it
+showed a page-fault chain under the book constructor, which looked conclusive.
+It wasn't, because that code path returns before the timing block and was never
+in the histogram. What settled it was (a) checking whether the proposed cause was
+even inside the measured region, (b) direct counter instrumentation showing a 1:1
+match between recentres and tail samples, and (c) reproducing on a second OS,
+which a page-fault explanation cannot survive. **Profiles point; they don't
+prove.**
+
+---
+
 ## Things to have crisp for the interview
 
 - **"What's your p99 latency per message?"** — HFT interviews *start* here.
-  You must have a measured number (see latency-harness). Know where the
-  time goes: the ref-index lookup on ~60% of messages is the prime suspect.
+  You must have a measured number (see `docs/benchmarks.md`) *and* be able to
+  say what's excluded from it.
 - **"Walk me through what happens on an `E` message."** — ref-index lookup
   → recover order (price/side from the stored `RestingOrder`) → find level
   → reduce qty → if zero, unlink from FIFO, free slot, clear bitmap bit if
-  level emptied, erase from ref index.
+  level emptied (cascading up the tiers), erase from ref index.
 - **"Why does replace lose time priority?"** — ITCH `U` is delete-old +
   add-new; the new ref goes to the *tail* of its level's FIFO. That's real
   exchange semantics, not an implementation shortcut.
-- **"How do you know it's correct?"** — replay a full session, assert the
-  book is empty after the end-of-day `S` message. (Also: no crossed book.)
-- **A tradeoff you *chose and could reverse*** — ring vs. hash-map levels;
-  bitmap vs. scan; LIFO free list; open vs. closed addressing; `Event` type
-  or not. Being able to argue *both sides* is the signal.
+- **"How do you know it's correct?"** — layered: unit tests pin invariants
+  (bitmap cascade, probe chains); a **differential fuzz** checks `RefIndex`
+  against `std::unordered_map` after every one of 20 000 operations; a full
+  replay asserts no crossed book and `not_found == 0`; and an **independent
+  Python scan of the raw bytes** provides ground truth the C++ can be checked
+  against. The last one is what actually caught the erase bug — worth saying,
+  because "I built a second implementation to disagree with the first" is a
+  strong answer.
+- **"Does ITCH give you snapshots?"** — No. It's pure incremental from session
+  start. Mid-session joins use **GLIMPSE**, a separate TCP snapshot service that
+  returns the book plus the sequence number it corresponds to; MoldUDP64
+  retransmission covers small gaps. And you never *repair* a diverged book — you
+  stop quoting the symbol, re-snapshot, and resume.
+- **A tradeoff you *chose and could reverse*** — fixed window vs. sliding;
+  bitmap vs. cached touch; LIFO free list; backward-shift vs. tombstones;
+  `Event` type or not. Being able to argue *both sides* is the signal.
+- **A bug you found and how** — have both §4 and §5 ready. The reasoning process
+  matters more than the bug.
 
 ## Cross-references
 - `docs/order-book.md` — the committed book design in detail.

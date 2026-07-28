@@ -123,10 +123,17 @@ taskset -c 1 ./build-perf/bench_feed
 
 ## 5. Results
 
-Raw run captured in `vm_results_before.txt` (repo root). This is the
-**"before"** state — the p99.9 tail is an unfixed measurement artifact
-(see §6). Numbers below are stable across 3 separate invocations of each
-binary; the range column is the in-harness spread over 5 runs.
+> **Status: these are PRE-FIX numbers.** They were measured before the two bugs
+> in §6 and §6b were found, and the p99.9 figure reflects the recentre defect.
+> p50, p99 and throughput are unaffected by either fix (both changed tail
+> behaviour and correctness, not the common-path instruction sequence), but the
+> whole table needs re-measuring on Linux before it is quoted anywhere. The
+> post-fix macOS comparison is in §6; macOS cannot resolve p50 (24 MHz counter,
+> ~42 ns/tick), which is why the Linux re-run is still required.
+
+Raw run captured in `vm_results_before.txt` (repo root). Numbers below are
+stable across 3 separate invocations of each binary; the range column is the
+in-harness spread over 5 runs.
 
 Calibrated TSC: **2.694 GHz** — matches the 2.70 GHz Xeon, so ticks→ns is
 correct and the numbers are valid.
@@ -247,30 +254,97 @@ the book stays intact. That is the correct behaviour, reached by accident.
 **So the latency benchmark surfaced a book-state-corruption bug.** That is the
 more valuable finding.
 
-### The fix (pending)
-Recenter on **touch drift** — when best bid/ask approaches the window edge —
-never on a single outlier add. Outliers in the band belong on the existing
-`is_far` path (which MSFT demonstrates works). Expected result: recenters drop
-by an order of magnitude, the p99.9 tail collapses toward p99, and the
-evicted/not_found counts go to near-zero.
+### The fix (applied)
+Replaced the sliding window with a **fixed** one: `base_price_` is set at
+construction from a per-symbol reference price (hardcoded for this replay; in
+production, previous close) and never moves. The window widened from 4 096 to
+32 768 ticks (±\$163.84), which required extending the touch bitmap from two
+tiers to three. Out-of-window orders take the existing `is_far` path.
+`recenter()`, `rebuild_bitmap()` and `evict_level()` are retired.
 
-### Interview framing
-*"p50 120 ns, p99 427 ns, p99.9 16 µs. perf pointed at page faults in the book
-constructor — but that path returns before the timing block, so it couldn't be
-the tail. I instrumented the recenter counter instead: 2124 recenters vs ~2150
-samples over 5 µs, 1:1. Then I re-ran on a different OS and the tail reproduced
-at the same message count, which killed the page-fault theory outright. The real
-cause was a recenter policy that re-centres on a single outlier order — and the
-evicted/not_found counters showed it was silently dropping resting orders. So
-the latency tail was a symptom of a correctness bug."*
+Measured effect on macOS/arm64 (same fixture, same harness):
 
-> **Two corrections on record.** (1) An early guess blamed recentering with no
-> evidence. (2) `perf` then pointed at constructor page faults, which I wrote up
-> as settled — wrong, because that code path is never timed. Only direct
-> counter instrumentation plus a cross-OS reproduction settled it. Both errors
-> are kept here deliberately: the profile was *misleading*, and the discipline
-> that caught it was checking whether the proposed cause was even inside the
-> measured region.
+| | before | after |
+|---|---|---|
+| p99.9 | 8 041 ns | **208 ns** |
+| samples ≥ 5 µs | ~2 150/run | **0–50/run** |
+| recentres | 2 124 | **0** |
+| orders evicted | ~14 000 | **0** |
+
+---
+
+## 6b. A second bug the same sanity-checking found: `RefIndex::erase`
+
+After the window fix, a full-fixture replay was checked for book consistency
+before publishing numbers. **6 of 7 books ended crossed** — best bid above best
+ask, which is impossible in a real book. TSLA showed bid \$644.00 / ask \$624.50.
+
+### How it was isolated
+1. **Ruled out the data.** An independent Python scan of the raw ITCH bytes
+   traced every SPY order's lifecycle: 113 073 adds, 109 898 deletes, and
+   **zero messages referencing an unknown ref**. The feed is self-consistent, so
+   the book was losing orders on its own. (The fixture also starts at true
+   session start — message 0 is `S`/`O` at 03:02 ET — ruling out a mid-session
+   join.)
+2. **Ruled out capacity.** Peak simultaneously-resting SPY orders: 3 177 against
+   a 65 536 pool. 5% utilisation.
+3. **Differential fuzz** of `RefIndex` against `std::unordered_map` failed after
+   **4 operations with 2 live entries** — small enough to reduce by hand.
+4. **Minimal case:** three refs colliding into one bucket; erase the first, and
+   the *third* becomes unreachable.
+
+### Root cause
+`erase` computed shift distances via a lambda capturing `hole` by reference
+while reassigning `hole` inside the loop, so after the first shift the
+comparison used an inconsistent origin and skipped entries that needed
+relocating. `find` stops at the first empty slot, hit the stale hole, and gave
+up — orphaning everything beyond it. It needs a probe chain of length ≥ 3 to
+manifest, which is why hand-written unit tests missed it.
+
+### Effect
+Orphaned refs meant delete/execute messages could not resolve, so those orders
+rested forever and the book crossed as the market moved away.
+
+| | before | after |
+|---|---|---|
+| books crossed | **6 of 7** | **0** |
+| not_found (7 symbols) | 543 | **0** |
+| SPY | bid 32480 / ask 32423 (crossed) | bid 32438 / ask 32440 (\$0.02) |
+| TSLA | bid 64400 / ask 62450 (crossed \$19.50) | bid 62408 / ask 62450 (\$0.42) |
+
+`not_found == 0` now matches the Python ground truth exactly. Regression
+coverage: 6 collision-chain tests plus a differential fuzz verifying every live
+entry after each of 20 000 operations.
+
+---
+
+## 6c. Methodology notes (the part worth reading twice)
+
+**`perf` pointed at the wrong thing, twice.** Its call graph showed a page-fault
+chain under `OrderBook::OrderBook`, which looked like a conclusive explanation
+for the tail. It was not: the `R` (directory) branch of `decode_message` returns
+*before* the `if constexpr (Timing)` block, so book construction is never
+sampled into the histogram. The faults were real and irrelevant.
+
+What actually settled each question:
+- **Checking whether the proposed cause was inside the measured region.** This
+  alone eliminated the page-fault theory.
+- **Direct counter instrumentation.** 2 124 recentres vs ~2 150 samples over
+  5 µs — a 1:1 match no profile could have shown, because `recenter` inlines
+  into `add_order` under LTO and has no frame of its own.
+- **Cross-platform reproduction.** The tail reproduced on macOS/arm64 at the
+  same message count and with the same tightness. A first-touch-fault
+  explanation cannot survive a different kernel and allocator; a fixed-cost scan
+  can.
+- **A second, independent implementation.** The Python scan over raw bytes gave
+  ground truth the C++ could be checked against, and is what proved the book —
+  not the data — was at fault.
+
+**Corrections on record.** An early version of this document asserted the tail
+was constructor page faults, and stated it as settled. That was wrong. It is
+left documented rather than quietly edited out, because the failure mode —
+trusting a profile without checking whether the hot code it names is inside the
+timed region — is more instructive than the eventual answer.
 
 ---
 
@@ -279,8 +353,27 @@ the latency tail was a symptom of a correctness bug."*
 - **Not bare metal** — KVM guest; a real desk measures on tuned bare metal
   with isolcpus, hugepages, and NIC kernel-bypass. This is the honest
   ceiling of a $0.03 cloud run.
+- **No IPC** — the `cycles` PMU read as 0 on this guest (instruction counting
+  works, cycle counting is gated), so instructions-per-cycle cannot be computed
+  from this data.
 - **No p99.99** off a single day's slice — sample count supports p99.9, not
   a stable p99.99.
 - **Replay, not live** — no NIC receive, no wire-to-book end-to-end. The
   number is the *engine's own* dispatch+apply cost, which is exactly the
   bounded, defensible thing to put a number on.
+- **Pre-market data** — the fixture spans 04:00–09:30 ET. Books are thinner and
+  quieter than during regular hours, so message rates and book depth are not
+  representative of the full session.
+
+---
+
+## 8. Open items
+
+1. **Re-measure on Linux/x86 post-fix.** §5 is stale. Needs a CPU-Optimized
+   droplet, `taskset -c 1`, `./build.sh perf`. This is the number for the CV.
+2. **Capture `perf stat` again** — the pre-fix profile is no longer
+   representative now that the recentre path is gone.
+3. **Consider a staleness signal.** `not_found_` is currently a counter; in a
+   live system it would trip a per-symbol health flag that stops quoting and
+   triggers a GLIMPSE re-snapshot (ITCH has no in-feed snapshot). Worth building
+   if the engine grows a strategy layer.
