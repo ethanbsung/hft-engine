@@ -32,9 +32,20 @@ int main() {
     hft::Handler coldHandler;
     std::size_t frames = coldHandler.decode<false>(buf, 0, coldBooks);
 
+    uint64_t min_ticks = UINT64_MAX;
     double p50s[5];
     double p99s[5];
     double p999s[5];
+
+    for (size_t i = 0; i < 200'000; ++i) {
+        uint64_t t0 = hft::platform::read_cycles();
+        uint64_t t1 = hft::platform::read_cycles();
+        uint64_t d = t1 - t0;
+        do_not_optimize(d);
+        min_ticks = std::min(min_ticks, d);
+    }
+
+    double overhead_ns = hft::platform::cycles_to_ns(min_ticks, freq);
 
     for (size_t i = 0; i < 5; ++i) {
         sink.samples.clear();
@@ -71,7 +82,7 @@ int main() {
             std::fprintf(stderr, "run %zu produced no samples\n", i);
             return 1;
         }
-        std::printf("callibrated TSC: %.3f GHz\n", freq / 1e9);
+        std::printf("calibrated TSC: %.3f GHz\n", freq / 1e9);
         p50s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 50 / 100], freq);
         p99s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 99 / 100], freq);
         p999s[i] = hft::platform::cycles_to_ns(sink.samples[sz * 999 / 1000], freq);
@@ -93,10 +104,12 @@ int main() {
     double p999_hi = p999s[4];
 
     std::printf("[%s] per-message dispatch+apply latency (median of 5 runs, range across runs):\n"
+                "  instrumentation overhead (empty fenced bracket, min of 200k): %.2f ns\n"
                 "  p50:   %7.2f ns  (runs %.2f-%.2f)\n"
                 "  p99:   %7.2f ns  (runs %.2f-%.2f)\n"
                 "  p99.9: %7.2f ns  (runs %.2f-%.2f)\n",
                 hft::platform::platform_tag(),
+                overhead_ns,
                 p50_median,  p50_lo,  p50_hi,
                 p99_median,  p99_lo,  p99_hi,
                 p999_median, p999_lo, p999_hi);
