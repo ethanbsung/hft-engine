@@ -1,6 +1,5 @@
 #include "hft/ref_index.hpp"
 #include <cassert>
-#include <cstring>
 
 namespace hft {
 
@@ -10,7 +9,7 @@ RefIndex::RefIndex(std::size_t capacity_pow2) : slots_(capacity_pow2, Slot{0, 0}
 }
 
 uint32_t RefIndex::find(order_ref_t ref) const noexcept {
-    std::size_t i = mix(ref) & mask_;
+std::size_t i = mix(ref) & mask_;
     while (true) {
         if (ref == slots_[i].ref) {
             return slots_[i].idx;
@@ -49,11 +48,12 @@ void RefIndex::erase(order_ref_t ref) noexcept {
 
     slots_[hole].ref = 0;
     std::size_t j = (hole + 1) & mask_;
-    auto dist = [&](std::size_t x) { return (x - hole) & mask_; };
     while (true) {
         if (slots_[j].ref == 0) return;
         std::size_t ideal = mix(slots_[j].ref) & mask_;
-        if (dist(ideal) <= dist(j)) {
+        std::size_t d_ideal = (ideal - hole) & mask_;
+        std::size_t d_j = (j - hole) & mask_;
+        if (d_ideal == 0 || d_ideal > d_j) {
             slots_[hole] = slots_[j];
             slots_[j].ref = 0;
             hole = j;
