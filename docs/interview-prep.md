@@ -373,15 +373,26 @@ ITCH, reported as a distribution across 20 runs. Full methodology in
 core of a Xeon 8280 at 2.694 GHz; instrumentation overhead 34–36 cycles, so net
 ≈110 ns. p50 spans 120.24–126.18 ns across all 20 runs.
 
-**Calibrate your own claim before someone else does.** ~110 ns for a hash
-lookup plus level access plus list unlink plus a three-tier bitmap update is
-*competent, not exceptional* — roughly 300 cycles, consistent with 2–3 cache
-misses and real work. Production books on tuned bare metal typically land
-50–150 ns for the same operation. Say that yourself rather than let an
-interviewer correct you; the credibility of everything else you claim depends
-on it. Also: **lead with p50, not the 74.8 M msgs/sec throughput** — that
-figure is dominated by messages that early-out on a non-watchlist symbol and
-mostly measures the framing loop.
+**"How does that compare to a real shop?" — the answer is that it doesn't, and
+saying so is the strong move.** Firms don't publish per-message book-apply
+latency. The public figures — sub-microsecond, commonly 1–5 µs — are
+**tick-to-trade**: NIC in → decision → NIC out, covering network stack, decode,
+book, strategy, risk and encoding. Your 123 ns is *one stage inside that path*.
+Presenting it against a tick-to-trade number, in either direction, is the kind
+of error that costs credibility for everything else you say. What you can
+defend: what the number measures, what it excludes, and how it was produced.
+
+**What you can say about the magnitude, from first principles:** ~110 ns at
+2.694 GHz is ~300 cycles for a hash probe, level access, list unlink and a
+three-tier bitmap update. An L3 hit is ~40 cycles, a DRAM miss ~200–300 — so
+that budget is consistent with a couple of cache misses plus real work. The
+73% cache-miss rate corroborates it. That is a defensible statement because it
+reasons from hardware behaviour rather than from an unpublished benchmark.
+
+**Also:** lead with p50, not the 74.8 M msgs/sec throughput — that figure is
+dominated by messages that early-out on a non-watchlist symbol and mostly
+measures the framing loop. And volunteer that no optimisation pass has been
+done; it is true, and it pre-empts the obvious follow-up.
 
 **The points worth stating:**
 - **Cycle counter, not `clock_gettime`.** Per-message work is tens of ns;
@@ -431,9 +442,12 @@ prove.**
   core; ~13 ns of that is timer overhead, so net ≈110 ns at p50. Be ready to say
   what is excluded: no NIC receive, no wire-to-book, KVM guest not bare metal,
   pre-market flow only.
-- **"Is that good?"** — say the honest thing: competent, not exceptional, and no
-  optimisation pass has been done yet. Then pivot to what the measurement
-  *found*, which is the stronger material.
+- **"Is that good?" / "How does it compare?"** — there is no published
+  per-stage number to compare against, and the public tick-to-trade figures
+  measure a different, much larger path. Say that, say what the number
+  measures, say no optimisation pass has been done. Then pivot to what the
+  measurement *found* (§4, §5) — that is the stronger material, and it is
+  material nobody can dispute because the evidence is in the repo.
 - **"Walk me through what happens on an `E` message."** — ref-index lookup
   → recover order (price/side from the stored `RestingOrder`) → find level
   → reduce qty → if zero, unlink from FIFO, free slot, clear bitmap bit if

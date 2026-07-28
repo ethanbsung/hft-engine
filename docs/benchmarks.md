@@ -436,12 +436,29 @@ The defensible one-line claim:
 
 Calibration, so this is neither oversold nor undersold:
 
-- **~110 ns for a hash lookup + level access + list unlink + three-tier bitmap
-  update is competent, not exceptional.** At 2.7 GHz that is ~300 cycles,
-  consistent with 2–3 cache misses plus real work. A tuned production book on
-  bare metal is typically in the 50–150 ns range for the same operation, and
-  specialists go lower. This sits in a believable part of that range with no
-  optimisation pass yet done.
+- **There is no public number to rank this against, and claiming one is a
+  trap.** Firms do not publish per-message book-apply latency; it is
+  competitive information. The figures that circulate publicly —
+  sub-microsecond, commonly 1–5 µs — are almost always **tick-to-trade**
+  (NIC in → decision → NIC out), which includes network stack, decode, book,
+  strategy, risk and order encoding. Your 123 ns is *one stage inside that
+  path*, so it is not comparable to those figures and should never be
+  presented as if it were. If asked "how does this compare?", the correct
+  answer is that the comparison does not exist, followed by what the number
+  *is* a measurement of.
+- **What can be said about the magnitude, from first principles:** ~110 ns at
+  2.694 GHz is ~300 cycles for a hash probe, a level access, a list unlink and
+  a three-tier bitmap update. An L3 hit is ~40 cycles and a DRAM miss ~200–300,
+  so that budget is consistent with a couple of cache misses plus real work —
+  i.e. the number is *physically plausible for what the code does*, which is a
+  claim that can be defended by reasoning rather than by an appeal to
+  unpublished benchmarks. The 73% cache-miss rate in §5 supports it.
+- **The genuinely fast book implementations are FPGAs**, where decode-and-update
+  runs in tens of nanoseconds. That is a hardware comparison, not a software
+  one.
+- **No optimisation pass has been done.** Everything so far removed a
+  pathology; nothing has yet targeted the common path. Say this before someone
+  asks.
 - **The throughput number is the weaker one.** 74.8 M msgs/sec is dominated by
   the ~99% of messages that early-out on a non-watchlist symbol. Leading with
   it invites a fair objection. Lead with p50.
