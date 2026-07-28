@@ -41,34 +41,40 @@ public:
     price_t best_bid() const noexcept;
     price_t best_ask() const noexcept;
     qty_t qty_at(Side side, price_t price) const noexcept;
+    // uint64_t recenters() const noexcept { return recenters_; }
+    uint64_t far_orders() const noexcept { return far_orders_; }
+    uint64_t not_found() const noexcept { return not_found_; }
+    // uint64_t evicted() const noexcept { return evicted_; }
 
 private:
     void reduce(order_ref_t ref, qty_t shares) noexcept;
     uint32_t alloc_slot() noexcept;
     void free_slot(uint32_t) noexcept;
     uint32_t index_of(price_t) const noexcept;
-    void recenter(price_t new_center) noexcept;
-    void evict_level(Level& lvl) noexcept;
-    void rebuild_bitmap() noexcept;
+    // void recenter(price_t new_center) noexcept;
+    // void evict_level(Level& lvl) noexcept;
+    // void rebuild_bitmap() noexcept;
 
     SymbolId symbol_;
     price_t base_price_;
     std::vector<RestingOrder> pool_;
     uint32_t free_head_ = kNullIdx;
-    uint64_t recenters_ = 0;
+    // uint64_t recenters_ = 0;
     uint64_t far_orders_ = 0;
     uint64_t pool_full_drops_ = 0;
-    uint32_t ring_origin_ = 0;
+    // uint32_t ring_origin_ = 0;
     uint64_t not_found_ = 0;
-    uint64_t evicted_ = 0;
+    // uint64_t evicted_ = 0;
     std::size_t mask_;
     std::vector<Level> bid_levels_;
     std::vector<Level> ask_levels_;
     uint64_t bid_summary_ = 0;
-    uint64_t bid_bits_[64] = {};
+    uint64_t bid_bits_[512] = {};
+    uint64_t bid_mid_[8] = {};
     uint64_t ask_summary_ = 0;
-    uint64_t ask_bits_[64] = {};
-    bool initialized_ = false;
+    uint64_t ask_bits_[512] = {};
+    uint64_t ask_mid_[8] = {};
+    // bool initialized_ = false;
 
     RefIndex ref_index_;
 };

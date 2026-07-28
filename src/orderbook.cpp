@@ -1,14 +1,12 @@
 #include "hft/orderbook.hpp"
 #include <cassert>
-#include <cmath>
-#include <algorithm>
 
 namespace hft {
 
 OrderBook::OrderBook(SymbolId symbol, price_t base_price, std::size_t window, std::size_t pool_capacity)
     : ref_index_(pool_capacity * 2) {
     assert(window != 0 && (window & (window - 1)) == 0
-       && "window must be a non-zero power of two");
+       && window <= 32768 && "window must be a non-zero power of two, bitmap arrays sized for window <= 32768");
     assert(pool_capacity != 0 && (pool_capacity & (pool_capacity - 1)) == 0
        && "pool_capacity must be a non-zero power of two");
     symbol_ = symbol;
@@ -48,25 +46,12 @@ uint32_t OrderBook::index_of(price_t price) const noexcept {
         return kNoLevel;
     }
 
-    uint32_t idx = (offset + ring_origin_) & mask_;
+    uint32_t idx = offset & mask_;
     return idx;
 }
 
 void OrderBook::add_order(order_ref_t ref, Side side, price_t price, qty_t shares) noexcept {
-    // Assumes clean data - first add order will be a realistic price
-    if (!initialized_) {
-        base_price_ = price - (mask_ + 1) / 2;
-        initialized_ = true;
-    }
-    
     uint32_t idx = index_of(price);
-    if (idx == kNoLevel) {
-        price_t center = base_price_ + (mask_ + 1) / 2;
-        if (std::abs(price - center) < static_cast<price_t>(mask_ + 1)) {
-            recenter(price);
-            idx = index_of(price);
-        }
-    }
     
     uint32_t slot = alloc_slot();
     if (slot == kNullIdx) {
@@ -84,6 +69,7 @@ void OrderBook::add_order(order_ref_t ref, Side side, price_t price, qty_t share
     auto& levels = (side == Side::Buy) ? bid_levels_ : ask_levels_;
     auto& bits = (side == Side::Buy) ? bid_bits_ : ask_bits_;
     auto& summary = (side == Side::Buy) ? bid_summary_ : ask_summary_;
+    auto& mid = (side == Side::Buy) ? bid_mid_ : ask_mid_;
 
     if (idx == kNoLevel) {
         far_orders_++;
@@ -102,8 +88,11 @@ void OrderBook::add_order(order_ref_t ref, Side side, price_t price, qty_t share
 
         std::size_t word = offset >> 6;
         std::size_t bit = offset & 63;
+        size_t mid_word = word >> 6;
+        size_t mid_bit = word & 63;
         bits[word] |= (1ULL << bit);
-        summary |= (1ULL << word);
+        mid[mid_word] |= 1ULL << mid_bit;
+        summary |= (1ULL << mid_word);
     } else {
         uint32_t old_tail = levels[idx].tail_idx;
         pool_[old_tail].next_idx = slot;
@@ -136,6 +125,7 @@ void OrderBook::remove_at_slot(uint32_t slot) {
     auto& levels = (side == Side::Buy) ? bid_levels_ : ask_levels_;
     auto& bits = (side == Side::Buy) ? bid_bits_ : ask_bits_;
     auto& summary = (side == Side::Buy) ? bid_summary_ : ask_summary_;
+    auto& mid = (side == Side::Buy) ? bid_mid_ : ask_mid_;
 
     uint32_t prev = pool_[slot].prev_idx;
     uint32_t next = pool_[slot].next_idx;
@@ -158,8 +148,13 @@ void OrderBook::remove_at_slot(uint32_t slot) {
         std::size_t offset = static_cast<std::size_t>(price - base_price_);
         std::size_t word = offset >> 6;
         std::size_t bit = offset & 63;
+        size_t mid_word = word >> 6;
+        size_t mid_bit = word & 63;
         bits[word] &= ~(1ULL << bit);
-        if (bits[word] == 0) summary &= ~(1ULL << word);
+        if (bits[word] == 0) {
+            mid[mid_word] &= ~(1ULL << mid_bit);
+            if (mid[mid_word] == 0) summary &= ~(1ULL << mid_word);
+        }
     }
 
     free_slot(slot);
@@ -229,7 +224,9 @@ qty_t OrderBook::qty_at(Side side, price_t price) const noexcept {
 
 price_t OrderBook::best_bid() const noexcept {
     if (bid_summary_ == 0) return kInvalidPrice;
-    std::size_t word = 63 - __builtin_clzll(bid_summary_);
+    std::size_t mid_word = 63 - __builtin_clzll(bid_summary_);
+    std::size_t mid_bit = 63 - __builtin_clzll(bid_mid_[mid_word]);
+    std::size_t word = mid_word * 64 + mid_bit;
     std::size_t bit = 63 - __builtin_clzll(bid_bits_[word]);
     std::size_t offset = word * 64 + bit;
     return base_price_ + offset;
@@ -237,11 +234,19 @@ price_t OrderBook::best_bid() const noexcept {
     
 price_t OrderBook::best_ask() const noexcept {
     if (ask_summary_ == 0) return kInvalidPrice;
-    std::size_t word = __builtin_ctzll(ask_summary_);
+    std::size_t mid_word = __builtin_ctzll(ask_summary_);
+    std::size_t mid_bit = __builtin_ctzll(ask_mid_[mid_word]);
+    std::size_t word = mid_word * 64 + mid_bit;
     std::size_t bit = __builtin_ctzll(ask_bits_[word]);
     std::size_t offset = word * 64 + bit;
     return base_price_ + offset;
 }
+
+}
+
+// Switched to fixed size array because recentering caused fat right tail unnecessarily
+
+/*
 
 void OrderBook::evict_level(Level& lvl) noexcept {
     uint32_t cur = lvl.head_idx;
@@ -253,6 +258,7 @@ void OrderBook::evict_level(Level& lvl) noexcept {
         cur = next;
     }
 }
+
 
 void OrderBook::rebuild_bitmap() noexcept {
     std::fill(std::begin(bid_bits_), std::end(bid_bits_), 0ULL);
@@ -279,7 +285,9 @@ void OrderBook::rebuild_bitmap() noexcept {
         ask_summary_ |= (1ULL << word);
     }
 }
+*/
 
+/*
 void OrderBook::recenter(price_t new_center) noexcept {
     uint32_t window = mask_ + 1;
     price_t new_base = new_center - (window) / 2;
@@ -330,6 +338,6 @@ void OrderBook::recenter(price_t new_center) noexcept {
 
 
 }
+*/
 
-}
 

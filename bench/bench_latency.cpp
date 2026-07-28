@@ -28,7 +28,7 @@ int main() {
     hft::LatencySink sink;
     sink.samples.reserve(N);
 
-    hft::BookSet coldBooks(4096, 1 << 16);
+    hft::BookSet coldBooks(32'768, 1 << 16);
     hft::Handler coldHandler;
     std::size_t frames = coldHandler.decode<false>(buf, 0, coldBooks);
 
@@ -38,12 +38,34 @@ int main() {
 
     for (size_t i = 0; i < 5; ++i) {
         sink.samples.clear();
-        hft::BookSet books(4096, 1 << 16);
+        hft::BookSet books(32'768, 1 << 16);
         hft::Handler handler;
         frames = handler.decode<true>(buf, 0, books, &sink);
         do_not_optimize(frames);
         do_not_optimize(handler.messages());
         std::sort(sink.samples.begin(), sink.samples.end());
+        uint32_t tail_ticks = static_cast<uint32_t>(5000.0 * freq / 1e9);
+        auto it = std::lower_bound(sink.samples.begin(), sink.samples.end(), tail_ticks);
+        std::size_t tail_count = sink.samples.end() - it;
+        std::printf("run %zu: %zu samples >= 5us\n", i, tail_count);
+        if (i == 4) {
+            struct W {const char* name; uint16_t loc; };
+            constexpr W kW[] = {{"AAPL", 13},{"AMZN",398},{"GOOGL",3461},
+                        {"MSFT",5294},{"QQQ",6562},{"SPY",7457},{"TSLA",8000}};
+            uint64_t tot_far = 0, tot_nf = 0;
+            for (const auto& w : kW) {
+                hft::OrderBook* b = books.get(w.loc);
+                if (!b) continue;
+                std::printf("%-6s far=%llu not_found=%llu\n",
+                            w.name,
+                            (unsigned long long)b->far_orders(),
+                            (unsigned long long)b->not_found());
+                tot_far += b->far_orders();
+                tot_nf  += b->not_found();
+            }
+            std::printf("TOTAL far=%llu not_found=%llu\n",
+                        (unsigned long long)tot_far, (unsigned long long)tot_nf);
+        }
         uint64_t sz = sink.samples.size();
         if (sz == 0) {
             std::fprintf(stderr, "run %zu produced no samples\n", i);

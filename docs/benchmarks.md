@@ -181,8 +181,14 @@ add_order             19.5%   (book mutation)
 std::__introsort_loop  6.8%   (std::sort of samples — bench bookkeeping,
                                outside the timed region, not engine cost)
 ```
-**Recenter/far-order does NOT appear in the hot path** — the original
-"tail = recentering" hypothesis was *wrong*; profiling corrected it.
+**Note on reading this profile — recenter is invisible here but IS the tail.**
+`recenter()` is called from inside `add_order` and is inlined under LTO, so its
+cost is attributed to `add_order`/`main` rather than appearing as its own frame.
+The page-fault chain under `OrderBook::OrderBook` is real but is **not** the
+histogram tail: the `R` (directory) branch of `decode_message` returns *before*
+the `if constexpr (Timing)` block, so book construction is never sampled into
+`LatencySink`. See §6 — the tail was isolated by direct instrumentation, not by
+this profile.
 
 ---
 
@@ -191,37 +197,80 @@ std::__introsort_loop  6.8%   (std::sort of samples — bench bookkeeping,
 The p50 is the common case: dispatch + a slot mutation in the preallocated
 pool + a touch-bitmap update — ~120 ns.
 
-**The p99.9 = 16 µs tail is NOT steady-state compute. `perf` showed it is
-first-touch page faults in `OrderBook` construction.** The harness builds a
-fresh `BookSet` inside each timed run; the first orders into each new book
-touch its just-`malloc`'d pool / level arrays for the first time, so the
-kernel faults in and zeroes fresh anonymous pages (`do_anonymous_page →
-__alloc_pages → clear_page_erms`) — *inside* the timed region. A 16 µs spike
-is way too large for a recenter and is the signature of a minor page fault,
-not a cache miss.
+**The p99.9 tail is `recenter()` — specifically its `rebuild_bitmap()` scan.**
+Isolated by direct instrumentation, not by the profile (recenter inlines into
+`add_order` under LTO, so it has no frame of its own in `perf report`).
 
-**This is a measurement artifact, not the engine's real hot-path cost.** A
-production engine allocates and *commits* its arena once at startup (pre-touch
-+ `mlockall`), so the hot path never takes a fault. The number to claim is the
-one with the arena pre-faulted.
+### The evidence
+Counting samples ≥ 5 µs against the book's own `recenters_` counter, per run:
 
-**The fix (pending): `OrderBook::prefault()`** — walk every page of the pool /
-level arrays / RefIndex table and write to it (`memset`) at book construction,
-so the faults happen at symbol-registration time (which the latency harness
-does not time) instead of on the first book-affecting message. Expected
-result: p99.9 collapses toward the p99 band.
+| | run 0 | run 1 | run 2 | run 3 | run 4 |
+|---|---|---|---|---|---|
+| samples ≥ 5 µs | 2243 | 2162 | 2213 | 2155 | 2146 |
+| total recenters | — | — | — | — | **2124** |
 
-**Interview framing (the strongest version of this story):** *"p50 was 120 ns,
-p99 427 ns. p99.9 was 16 µs — I profiled it with perf instead of guessing, and
-it wasn't recentering like I'd assumed; it was first-touch page faults in
-arena setup. I pre-faulted (and would mlock) the arena, which is standard HFT
-startup discipline, and the tail dropped to [X]."* Owning a corrected
-hypothesis + a measured fix beats any single number.
+**~1 tail sample per recenter, within 1–4%.** Per-symbol on the same run:
 
-> Correction on record: an earlier version of this doc guessed the tail was
-> re-centering / far-order events. `perf report` showed recenter does **not**
-> appear in the hot path. Kept as a note because *profiling overturning a
-> plausible guess* is exactly the point of measuring.
+```
+AAPL   recenters=154   far=381    not_found=1160  evicted=3244
+AMZN   recenters=189   far=4394   not_found=351   evicted=601
+GOOGL  recenters=173   far=1692   not_found=2153  evicted=1757
+MSFT   recenters=2     far=4870   not_found=8     evicted=1
+QQQ    recenters=202   far=148    not_found=2252  evicted=3620
+SPY    recenters=399   far=306    not_found=2127  evicted=2350
+TSLA   recenters=1005  far=6303   not_found=5828  evicted=5872
+TOTAL  recenters=2124
+```
+
+Two independent facts rule out the page-fault hypothesis:
+1. **The tail reproduces on macOS/arm64** (~8 µs, 2124 recenters) — a different
+   kernel, allocator, and page-fault path. A first-touch-fault explanation does
+   not survive an OS change; a fixed-cost scan does.
+2. **The tail is tight** (15.9–16.1 µs on x86, 8.0–8.4 µs on arm64). Page faults
+   jitter; `rebuild_bitmap()` is a constant 2 × 4096-level sequential scan
+   (~192 KB), which is exactly the shape of a fixed-cost operation. The ~2×
+   difference between platforms tracks memory bandwidth, not fault cost.
+
+### Root cause (a correctness bug, not just latency)
+`add_order` calls `recenter(price)` whenever an add lands outside the ±2048-tick
+window but within ±4096 of centre — i.e. it re-centres the entire book **onto a
+single incoming order**. One deep resting order $25 from mid drags the window to
+it, **evicting the near-mid book**; the next normal add drags it back. Ping-pong,
+~2100× per pass.
+
+The `evicted` / `not_found` columns are the damage: ~14 k resting orders evicted
+per pass, and ~14 k subsequent delete/execute/cancel messages then fail to find
+their order. Contrast **MSFT: 2 recenters → 1 evicted → 8 not_found** — its price
+level puts outliers beyond the recenter band, so they take the `is_far` path and
+the book stays intact. That is the correct behaviour, reached by accident.
+
+**So the latency benchmark surfaced a book-state-corruption bug.** That is the
+more valuable finding.
+
+### The fix (pending)
+Recenter on **touch drift** — when best bid/ask approaches the window edge —
+never on a single outlier add. Outliers in the band belong on the existing
+`is_far` path (which MSFT demonstrates works). Expected result: recenters drop
+by an order of magnitude, the p99.9 tail collapses toward p99, and the
+evicted/not_found counts go to near-zero.
+
+### Interview framing
+*"p50 120 ns, p99 427 ns, p99.9 16 µs. perf pointed at page faults in the book
+constructor — but that path returns before the timing block, so it couldn't be
+the tail. I instrumented the recenter counter instead: 2124 recenters vs ~2150
+samples over 5 µs, 1:1. Then I re-ran on a different OS and the tail reproduced
+at the same message count, which killed the page-fault theory outright. The real
+cause was a recenter policy that re-centres on a single outlier order — and the
+evicted/not_found counters showed it was silently dropping resting orders. So
+the latency tail was a symptom of a correctness bug."*
+
+> **Two corrections on record.** (1) An early guess blamed recentering with no
+> evidence. (2) `perf` then pointed at constructor page faults, which I wrote up
+> as settled — wrong, because that code path is never timed. Only direct
+> counter instrumentation plus a cross-OS reproduction settled it. Both errors
+> are kept here deliberately: the profile was *misleading*, and the discipline
+> that caught it was checking whether the proposed cause was even inside the
+> measured region.
 
 ---
 

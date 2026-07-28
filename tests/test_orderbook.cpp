@@ -3,16 +3,27 @@
 
 // Tests for OrderBook: add / delete / execute / cancel / replace and the
 // best_bid/best_ask touch bitmap. Prices are chosen so the tick offset
-// (price - base_price) is easy to read: base_price = 10000, window = 4096,
-// so a price of 10005 is offset 5, etc. window/pool_capacity are powers of
-// two (asserted by the ctor).
+// (price - base_price) is easy to read: base_price = 10000, so a price of
+// 10005 is offset 5, etc. window/pool_capacity are powers of two (asserted by
+// the ctor).
+//
+// The book uses a FIXED price window: base_price is supplied at construction
+// (in production, from the previous close; see book_set.cpp) and never moves.
+// A price outside [base_price, base_price + window) is a "far" order — tracked
+// by ref so its later delete/execute resolves, but contributing no price level
+// and no touch bit. There is no recentring.
+//
+// The touch bitmap is three-tier over `window` bits:
+//   bits_[512] (one bit per tick) -> mid_[8] (one bit per bits_ word)
+//                                 -> summary (one bit per mid_ word)
+// so a window of 32768 needs 512 words, 8 mid words, 8 summary bits.
 
 namespace hft {
 namespace {
 
 constexpr SymbolId kSym = 1;
 constexpr price_t  kBase = 10000;
-constexpr std::size_t kWindow = 4096;
+constexpr std::size_t kWindow = 32768;
 constexpr std::size_t kPool = 1024;
 
 OrderBook make_book() { return OrderBook(kSym, kBase, kWindow, kPool); }
@@ -208,108 +219,152 @@ TEST(OrderBook, IndependentBidAndAskSides) {
     EXPECT_EQ(b.best_ask(), 10020);               // ask untouched
 }
 
-// --- Far order (pathologically far): tracked by ref, not in the touch ------
-// NOTE: a price merely just outside the window now triggers a *recenter*
-// (drift-following) rather than a far order. A far order is the pathological
-// outlier case: out of band AND beyond the recenter threshold
-// (|price - window_center| >= window). window_center = kBase + kWindow/2.
-// So kBase + 3*kWindow is far enough that recenter is NOT triggered.
+// --- Far orders: outside the fixed window, tracked by ref only -------------
+// The window is [kBase, kBase + kWindow). Anything outside is "far": it holds
+// a pool slot and a ref-index entry (so its later delete/execute resolves) but
+// contributes no price level and no touch bit. In the real feed these are
+// ITCH's $199,999.99 "no price" sentinel and penny stubs.
 
-constexpr price_t kFar = kBase + 3 * static_cast<price_t>(kWindow);
+constexpr price_t kFarAbove = kBase + static_cast<price_t>(kWindow) + 1;
+constexpr price_t kFarBelow = kBase - 1;
 
-TEST(OrderBook, FarOrderNotInTouch) {
+TEST(OrderBook, FarOrderAboveWindowNotInTouch) {
     OrderBook b = make_book();
-    // The first add centers the book on itself, so an anchor at kBase fixes the
-    // window around kBase (base_price_ = kBase - kWindow/2). kFar is then 3
-    // windows away -> genuinely far (no recenter).
-    b.add_order(1, Side::Buy, kBase, 100);
-    b.add_order(2, Side::Buy, kFar,  100);
-    EXPECT_EQ(b.best_bid(), kBase);                // anchor shows, far one does not
-    EXPECT_EQ(b.qty_at(Side::Buy, kFar), 0);       // out of band -> 0
-    // The far order is still tracked by ref: delete must find and remove it
-    // cleanly, leaving only the anchor.
+    b.add_order(1, Side::Buy, kBase + 5,  100);
+    b.add_order(2, Side::Buy, kFarAbove,  100);
+    EXPECT_EQ(b.best_bid(), kBase + 5);              // far one does not become touch
+    EXPECT_EQ(b.qty_at(Side::Buy, kFarAbove), 0);    // out of band -> 0
+    b.delete_order(2);                               // still resolvable by ref
+    EXPECT_EQ(b.best_bid(), kBase + 5);
+}
+
+TEST(OrderBook, FarOrderBelowWindowNotInTouch) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy, kBase + 5,  100);
+    b.add_order(2, Side::Buy, kFarBelow,  100);      // one tick below base
+    EXPECT_EQ(b.best_bid(), kBase + 5);
+    EXPECT_EQ(b.qty_at(Side::Buy, kFarBelow), 0);
     b.delete_order(2);
-    EXPECT_EQ(b.best_bid(), kBase);
+    EXPECT_EQ(b.best_bid(), kBase + 5);
 }
 
-TEST(OrderBook, FarOrderCoexistsWithNearOrder) {
+// A far order must not leak a pool slot: deleting it frees the slot, and the
+// book keeps working afterwards.
+TEST(OrderBook, FarOrderDeleteFreesSlot) {
     OrderBook b = make_book();
-    b.add_order(1, Side::Buy, kBase,      100);    // anchor: centers window on kBase
-    b.add_order(2, Side::Buy, kFar,       100);    // far (no recenter)
-    b.add_order(3, Side::Buy, kBase + 5,  100);    // near, just above anchor
-    EXPECT_EQ(b.best_bid(), kBase + 5);            // highest near price shows
-    EXPECT_EQ(b.qty_at(Side::Buy, kFar), 0);       // far one contributes no touch
-}
-
-// --- Recenter (window follows drift) ---------------------------------------
-
-// A price just outside the window (within the recenter threshold) should
-// slide the window to follow it, not become a far order.
-TEST(OrderBook, RecenterFollowsDrift) {
-    OrderBook b = make_book();
-    // Just past the top edge: offset window+50 is out of band but within one
-    // window of center -> triggers recenter.
-    price_t drifted = kBase + static_cast<price_t>(kWindow) + 50;
-    b.add_order(1, Side::Buy, drifted, 100);
-    EXPECT_EQ(b.best_bid(), drifted);              // now in-band via recenter
-    EXPECT_EQ(b.qty_at(Side::Buy, drifted), 100);
-}
-
-// After recentering to follow a drifted price, the original (now far-below)
-// price falls out of the window.
-TEST(OrderBook, RecenterDropsOldFarSide) {
-    OrderBook b = make_book();
-    // First add centers the window on kBase+5 (base_price_ = kBase+5 - kWindow/2).
-    b.add_order(1, Side::Buy, kBase + 5, 100);     // establishes the center
-    // A price out of band but within one window of the new center -> recenters
-    // upward to follow it, rather than becoming a far order.
-    price_t drifted = kBase + static_cast<price_t>(kWindow);
-    b.add_order(2, Side::Buy, drifted, 100);       // triggers recenter upward
-    EXPECT_EQ(b.best_bid(), drifted);
-    // The old order at kBase+5 is now far below the new window. It survives
-    // in the book by ref (this test only asserts the new touch is correct);
-    // whether kBase+5 is still queryable depends on how far the window slid.
-}
-
-// The bug rebuild_bitmap() fixes: a near order that STAYS in the window across
-// a recenter. Its ring slot is preserved by the origin bump, but its logical
-// offset (price - base_price_) changes when base_price_ slides, so its touch
-// bit must move too. Before the fix the stale bit made best_bid report a
-// phantom price. Concretely (base=10000, window=4096):
-//   A @ 13000 -> logical offset 3000, ring slot 3000.
-//   drift @ 14106 is one tick-band past the top edge -> recenter, delta=2058.
-//   Upward recenter evicts logical offsets 0..2057, so slot 3000 (order A)
-//   survives; new base=12058, so A's logical offset becomes 942 and drift's
-//   becomes 2048. best_bid must be the higher price (drift), and A must still
-//   be queryable at its true price 13000 -- not a phantom (old base+3000).
-TEST(OrderBook, RecenterKeepsSurvivingNearOrder) {
-    OrderBook b = make_book();
-    b.add_order(1, Side::Buy, 13000, 100);                 // A: survives recenter
-    price_t drift = kBase + static_cast<price_t>(kWindow) + 10;  // 14106
-    b.add_order(2, Side::Buy, drift, 200);                 // triggers recenter up
-    EXPECT_EQ(b.best_bid(), drift);                        // drift is the new touch
-    EXPECT_EQ(b.qty_at(Side::Buy, drift), 200);
-    EXPECT_EQ(b.qty_at(Side::Buy, 13000), 100);            // A still at its true price
-    // Deleting the touch must fall back to A's real price, not a phantom.
-    b.delete_order(2);
-    EXPECT_EQ(b.best_bid(), 13000);
-    EXPECT_EQ(b.qty_at(Side::Buy, 13000), 100);
-}
-
-// Same invariant on the ask side, and exercising a level with two orders so
-// the aggregate qty and FIFO list survive the bitmap rebuild intact.
-TEST(OrderBook, RecenterKeepsSurvivingAskLevel) {
-    OrderBook b = make_book();
-    b.add_order(1, Side::Sell, 13000, 100);
-    b.add_order(2, Side::Sell, 13000, 250);                // same level, two orders
-    price_t drift = kBase + static_cast<price_t>(kWindow) + 10;
-    b.add_order(3, Side::Sell, drift, 50);                 // recenter
-    EXPECT_EQ(b.qty_at(Side::Sell, 13000), 350);           // aggregate survived
-    EXPECT_EQ(b.best_ask(), 13000);                        // 13000 < drift -> lowest ask
-    EXPECT_EQ(b.qty_at(Side::Sell, drift), 50);            // drift level also present
+    b.add_order(1, Side::Buy, kFarAbove, 100);
     b.delete_order(1);
+    EXPECT_EQ(b.best_bid(), kInvalidPrice);          // nothing resting
+    b.add_order(2, Side::Buy, kBase + 7, 100);       // book still usable
+    EXPECT_EQ(b.best_bid(), kBase + 7);
+}
+
+// Execute against a far order reduces it by ref without touching any level.
+TEST(OrderBook, FarOrderExecuteResolvesByRef) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy, kBase + 5,  100);
+    b.add_order(2, Side::Buy, kFarAbove,  100);
+    b.execute_order(2, 100);                         // fully exhaust the far order
+    EXPECT_EQ(b.best_bid(), kBase + 5);              // near book unaffected
+    EXPECT_EQ(b.qty_at(Side::Buy, kBase + 5), 100);
+}
+
+// The window edges themselves are IN band; one tick beyond is not.
+TEST(OrderBook, WindowBoundariesAreInclusiveLowExclusiveHigh) {
+    OrderBook b = make_book();
+    const price_t top = kBase + static_cast<price_t>(kWindow) - 1;
+    b.add_order(1, Side::Buy, kBase, 100);           // lowest in-band tick
+    EXPECT_EQ(b.best_bid(), kBase);
+    b.add_order(2, Side::Buy, top, 100);             // highest in-band tick
+    EXPECT_EQ(b.best_bid(), top);
+    EXPECT_EQ(b.qty_at(Side::Buy, top), 100);
+}
+
+// --- Three-tier bitmap ------------------------------------------------------
+// bits_[512] -> mid_[8] -> summary. Offsets are chosen to land in different
+// words at each tier so a missing tier-update shows up as a wrong touch.
+//   offset      -> bits word (off>>6), mid word (word>>6), summary bit
+//   5           -> 0,   0, 0
+//   4096        -> 64,  1, 1
+//   20480       -> 320, 5, 5
+//   32767       -> 511, 7, 7   (top of window)
+
+TEST(OrderBook, BestBidAcrossMidWords) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy, kBase + 5,     10);    // mid word 0
+    b.add_order(2, Side::Buy, kBase + 4096,  10);    // mid word 1
+    b.add_order(3, Side::Buy, kBase + 20480, 10);    // mid word 5 (highest)
+    EXPECT_EQ(b.best_bid(), kBase + 20480);
+}
+
+TEST(OrderBook, BestAskAcrossMidWords) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Sell, kBase + 20480, 10);   // mid word 5
+    b.add_order(2, Side::Sell, kBase + 4096,  10);   // mid word 1
+    b.add_order(3, Side::Sell, kBase + 5,     10);   // mid word 0 (lowest)
+    EXPECT_EQ(b.best_ask(), kBase + 5);
+}
+
+// Clearing must cascade bits -> mid -> summary, but only when the tier above
+// is genuinely empty. Emptying the top level should fall back to the next one
+// down, several mid-words away.
+TEST(OrderBook, ClearCascadeFallsBackAcrossMidWords) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy, kBase + 5,     10);
+    b.add_order(2, Side::Buy, kBase + 20480, 10);
+    EXPECT_EQ(b.best_bid(), kBase + 20480);
+    b.delete_order(2);                               // clears bits/mid/summary bit
+    EXPECT_EQ(b.best_bid(), kBase + 5);              // falls back, not phantom
+    b.delete_order(1);
+    EXPECT_EQ(b.best_bid(), kInvalidPrice);          // all tiers clear
+}
+
+// A mid-word bit must NOT be cleared while another level in the same bits word
+// is still occupied. Offsets 20480 and 20481 share bits word 320.
+TEST(OrderBook, ClearKeepsMidBitWhenWordStillOccupied) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy, kBase + 20480, 10);
+    b.add_order(2, Side::Buy, kBase + 20481, 10);    // same bits word
+    EXPECT_EQ(b.best_bid(), kBase + 20481);
     b.delete_order(2);
-    EXPECT_EQ(b.best_ask(), drift);                        // now drift is the only ask
+    EXPECT_EQ(b.best_bid(), kBase + 20480);          // sibling still visible
+}
+
+// Same, one tier up: offsets 4096 and 8192 are different bits words (64, 128)
+// but both in mid word 1. Emptying one must leave the other reachable.
+TEST(OrderBook, ClearKeepsSummaryBitWhenMidStillOccupied) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy, kBase + 4096, 10);     // bits word 64,  mid 1
+    b.add_order(2, Side::Buy, kBase + 8192, 10);     // bits word 128, mid 1
+    EXPECT_EQ(b.best_bid(), kBase + 8192);
+    b.delete_order(2);
+    EXPECT_EQ(b.best_bid(), kBase + 4096);           // still found via mid word 1
+}
+
+// Top-of-window offset exercises the highest index at every tier.
+TEST(OrderBook, TouchAtTopOfWindow) {
+    OrderBook b = make_book();
+    const price_t top = kBase + static_cast<price_t>(kWindow) - 1;  // offset 32767
+    b.add_order(1, Side::Buy,  top, 10);
+    b.add_order(2, Side::Sell, top, 10);
+    EXPECT_EQ(b.best_bid(), top);
+    EXPECT_EQ(b.best_ask(), top);
+    b.delete_order(1);
+    EXPECT_EQ(b.best_bid(), kInvalidPrice);
+    EXPECT_EQ(b.best_ask(), top);                    // ask side independent
+}
+
+// Bid and ask bitmaps are separate structures: filling one must not perturb
+// the other's tiers.
+TEST(OrderBook, BidAndAskBitmapsAreIndependent) {
+    OrderBook b = make_book();
+    b.add_order(1, Side::Buy,  kBase + 100,   10);
+    b.add_order(2, Side::Sell, kBase + 20480, 10);
+    EXPECT_EQ(b.best_bid(), kBase + 100);
+    EXPECT_EQ(b.best_ask(), kBase + 20480);
+    b.delete_order(1);
+    EXPECT_EQ(b.best_bid(), kInvalidPrice);
+    EXPECT_EQ(b.best_ask(), kBase + 20480);          // ask untouched
 }
 
 }  // namespace

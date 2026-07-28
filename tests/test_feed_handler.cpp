@@ -33,10 +33,12 @@ constexpr std::size_t kExpectedFrames = 293482;
 
 // SPY resolves to stock_locate 7457 in this fixture (locate is not stable
 // across days; it is resolved at runtime from the 'R' messages). window/pool
-// are the per-book config; each book auto-centers its price ring on its first
-// order, so no base_price is supplied here. 1 tick = 1 cent, +/- $20.48.
+// are the per-book config. Each book's base_price comes from the hardcoded
+// per-symbol reference in book_set.cpp (in production: previous close), and
+// the window is fixed — it never recentres. 1 tick = 1 cent, so a 32768
+// window spans +/- $163.84 around the reference.
 constexpr SymbolId     kSpySym    = 7457;
-constexpr std::size_t  kWindow    = 4096;
+constexpr std::size_t  kWindow    = 32768;
 constexpr std::size_t  kPool      = 1 << 16;
 
 std::vector<std::byte> read_fixture(const std::string& path) {

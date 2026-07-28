@@ -11,7 +11,7 @@
 
 int main() {
     constexpr const char* kFixturePath = "tests/fixtures/itch_500m.bin";
-    hft::BookSet coldBooks(4096, 1 << 16);
+    hft::BookSet coldBooks(32'768, 1 << 16);
     hft::Handler coldHandler;
 
     std::ifstream in(kFixturePath, std::ios::binary | std::ios::ate);
@@ -27,7 +27,7 @@ int main() {
     constexpr int kIters = 20;
 
     for (size_t i = 0; i < kIters; i++) {
-        hft::BookSet books(4096, 1 << 16);
+        hft::BookSet books(32'768, 1 << 16);
         hft::Handler handler;
         hft::nanos_t start = hft::platform::now_ns();
         frames = handler.decode<false>(buf, 0, books);

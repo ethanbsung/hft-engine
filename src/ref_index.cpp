@@ -1,5 +1,6 @@
 #include "hft/ref_index.hpp"
 #include <cassert>
+#include <cstring>
 
 namespace hft {
 
@@ -60,7 +61,5 @@ void RefIndex::erase(order_ref_t ref) noexcept {
         j = (j + 1) & mask_;
     }
 }
-
-
 
 }
