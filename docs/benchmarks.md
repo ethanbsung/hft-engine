@@ -1,7 +1,7 @@
 # Benchmarks & Profiling — Results and Methodology
 
 The numbers this project is allowed to claim, and *exactly* how they were
-produced. Per the README rule, no latency number is stated that was not
+produced. No latency number is stated anywhere in this project that was not
 measured on the methodology below. This doc is the source of truth for
 "what's the number" and the script for defending it in an interview.
 

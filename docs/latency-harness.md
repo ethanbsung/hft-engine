@@ -11,8 +11,8 @@ one tap, not a chain.
 ## Responsibility
 Measure the system's own latency **honestly**. Timestamp taps between
 stages, aggregate into distributions (not just averages), and report.
-This is what lets you say true things about performance — and per the
-README rule, you may not claim a latency number you haven't measured.
+This is what lets you say true things about performance — a latency number
+you haven't measured is a number you may not claim (see `benchmarks.md`).
 
 ## What to measure
 - **Per-stage taps** on the hot path: recv → parsed → book-updated →

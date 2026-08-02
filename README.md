@@ -161,11 +161,3 @@ and their tradeoffs.
 Docs marked ⬜ in the module index are **design-time notes for unbuilt
 components**, written before implementation — they describe intent, not
 shipped code.
-
----
-
-## Ground rules for this project
-
-- Decide data representations **before** writing the structures that use them.
-- Don't claim "lock-free" / "sub-microsecond" in a comment until it's measured.
-- One module at a time, each with tests, each measured before optimizing.

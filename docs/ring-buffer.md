@@ -57,7 +57,7 @@ or drop.
 Target: single-digit-to-tens of ns per push/pop once padded correctly.
 **Measure this on Linux, pinned** (`bench/`), and *do not* write
 "lock-free"/"wait-free" in a comment until the benchmark backs it up
-(README rule).
+(see `benchmarks.md`).
 
 ## Done checklist
 - [ ] Power-of-two capacity, mask-based wrap
