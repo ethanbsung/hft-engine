@@ -271,7 +271,7 @@ primary feed.)*
 | Module | File | Phase | Status |
 |---|---|---|---|
 | Types & SymbolTable | [types.md](types.md) | 1 | ✅ started |
-| Feed Handler | [feed-handler.md](feed-handler.md) | 1 | ✅ MoldUDP64 + ITCH decode (A/F/D/C/E/X/U/P); sequencing TODO |
+| Feed Handler | [feed-handler.md](feed-handler.md) | 1 | 🚧 BinaryFILE + ITCH decode (A/F/D/C/E/X/U/P) done; MoldUDP64 transport + gap detection TODO |
 | Order Book | [order-book.md](order-book.md) | 1 | ✅ apply path, queries, fixed window, 3-tier bitmap; benchmarked |
 | Latency Harness | [latency-harness.md](latency-harness.md) | 1 | 🚧 timing tap + percentile reporting in `bench/`; no staged taps yet |
 | Ring Buffer (SPSC) | [ring-buffer.md](ring-buffer.md) | 1 | ⬜ not started (single-threaded replay so far) |

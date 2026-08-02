@@ -1,8 +1,8 @@
 # hft-engine
 
 A from-scratch low-latency market data engine: **Nasdaq TotalView-ITCH 5.0**
-decoded off MoldUDP64 frames into a production-shaped limit order book, with
-latency measured honestly on a pinned x86 core.
+decoded into a production-shaped limit order book, with latency measured
+honestly on a pinned x86 core.
 
 > **p50 123 ns / p99 426 ns** per-message dispatch + apply, over **862 057
 > applied ITCH messages** across 7 symbols, on a pinned core at 2.694 GHz.
@@ -12,10 +12,9 @@ latency measured honestly on a pinned x86 core.
 Full methodology, the environment's limitations, and what these numbers
 explicitly do *not* claim: **[docs/benchmarks.md](docs/benchmarks.md)**.
 
-This is a learning project — I write every line myself — but it is built to
-the bar of a real trading system, not a tutorial: real wire protocol, real
-book semantics, measured latency, and no performance claim that isn't backed
-by a run.
+A learning project built to the bar of a real trading system rather than a
+tutorial: real exchange protocol, real book semantics, measured latency, and
+no performance claim that isn't backed by a run.
 
 ---
 
@@ -23,7 +22,7 @@ by a run.
 
 | Component | Status | What it does |
 |---|---|---|
-| **Feed handler** | ✅ | MoldUDP64 framing → ITCH 5.0 decode: `A`/`F` add, `D` delete, `C`/`E` execute, `X` cancel, `U` replace, `P` trade, plus stock directory. Zero-copy big-endian loads, no allocation, no string parsing on the hot path. |
+| **Feed handler** | ✅ | Length-prefixed ITCH 5.0 binary framing → decode of `A`/`F` add, `D` delete, `C`/`E` execute, `X` cancel, `U` replace, `P` trade, plus stock directory. Zero-copy big-endian loads, no allocation, no string parsing on the hot path. Replay off the binary file; MoldUDP64 transport and gap detection are not built. |
 | **Order book** | ✅ | Per-symbol, order-by-order (not level-aggregated). Fixed price window, intrusive doubly-linked FIFO per level for price-time priority, preallocated slot pool, open-addressed ref→slot index. |
 | **Touch lookup** | ✅ | Three-tier bitmap (summary → mid → bits) so best-bid/ask is a few bit-scan ops instead of a linear scan. |
 | **Latency harness** | 🚧 | Compile-time-gated timing tap (`template<bool Timing>`) so instrumentation costs nothing when off; p50/p99/p99.9 reporting in `bench/`. |
@@ -52,8 +51,9 @@ removing a rare expensive path rather than speeding up the common one.
 **6 of 7 books ended crossed** — best bid above best ask, which is impossible.
 Isolating it:
 
-- Ruled out the data — an independent Python pass over the raw ITCH bytes found
-  113 073 SPY adds, 109 898 deletes, and **zero** unknown refs.
+- Ruled out the data — a separate Python pass over the raw ITCH bytes, written
+  against the spec independently of the C++ decoder, found 113 073 SPY adds,
+  109 898 deletes, and **zero** unknown refs.
 - Ruled out capacity — peak 3 177 resting orders against a 65 536 pool.
 - **Differential fuzz** against `std::unordered_map` failed in **4 operations
   with 2 live entries**, small enough to reduce by hand.

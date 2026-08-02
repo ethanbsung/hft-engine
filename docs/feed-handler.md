@@ -1,7 +1,11 @@
 # Module: Feed Handler (Nasdaq TotalView-ITCH 5.0)
 
 **File(s):** `include/hft/feed_handler.hpp`, `src/feed_handler.cpp`
-**Phase:** 1 · **Status:** 🟩 implemented (MoldUDP64 framing + ITCH decode for A/F/D/C/E/X/U/P, stock directory, optional per-message timing tap; benchmarked, see `docs/benchmarks.md`)
+**Phase:** 1 · **Status:** 🟩 decode implemented — BinaryFILE length-prefixed
+framing + ITCH decode for A/F/D/C/E/X/U/P, stock directory, optional
+per-message timing tap; benchmarked, see `docs/benchmarks.md`.
+⬜ MoldUDP64 transport, sequence-gap detection, and the feed simulator (§2, §7)
+are **not** built.
 
 ## Responsibility
 The only component that understands the wire format. Bytes → normalized
