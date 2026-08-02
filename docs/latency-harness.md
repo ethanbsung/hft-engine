@@ -21,12 +21,12 @@ you haven't measured is a number you may not claim (see `benchmarks.md`).
 - **End-to-end:** recv_ts → order-out.
 - **The plumbing:** ring buffer push/pop (see design/ring-buffer.md benchmark).
 
-### Your-code latency = later stage − `recv_ts` (the number that's yours)
-The most important, most resume-relevant number is **your own pipeline's
-latency**, independent of the exchange and network:
-`now_ns()` at a later stage **minus `recv_ts`**. `recv_ts` is stamped in
-the socket reader (see feed-handler.md), so `(after-strategy) − recv_ts`
-is pure own-code time. Report this prominently.
+### Own-code latency = later stage − `recv_ts`
+The number that actually belongs to this engine is its own pipeline latency,
+independent of the exchange and network: `now_ns()` at a later stage **minus
+`recv_ts`**. `recv_ts` is stamped in the socket reader (see feed-handler.md),
+so `(after-strategy) − recv_ts` is pure own-code time. This is the figure to
+report.
 
 ### NEVER cross-subtract `exchange_ts` and `recv_ts`
 There are three timestamps measuring three different things:

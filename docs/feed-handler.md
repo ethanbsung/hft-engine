@@ -227,10 +227,8 @@ loop. (In tests a literal like `12345` is fine.)
 report `recv_ts − exchange_ts` as a latency: the ITCH timestamp is ns since
 midnight ET on Nasdaq's clock, from a day in 2020.
 
-⚠️ **ARCHITECTURE §2 no longer applies.** It argues your code's latency is
-invisible against a ~5,000µs crypto exchange floor. Under replay there is
-no network and no exchange floor — decode + book-update **is** the entire
-measurable number. §2 should be rescoped or removed.
+Under replay there is no network and no exchange floor, so decode +
+book-update **is** the entire measurable number — see ARCHITECTURE §2.
 
 ---
 
@@ -273,9 +271,10 @@ behavior, branch layout; honest decode + book-update cost per message.
 - **A/B feed arbitration.** Real ITCH is two redundant multicast feeds you
   race against each other.
 
-**Defensible claim:** *production-grade feed handler and L3 order book,
-benchmarked in isolation; kernel bypass and colocation out of scope for a
-laptop.* Stronger than overselling — it shows you know the boundary.
+**What this scope supports:** a feed handler and L3 order book benchmarked in
+isolation, with kernel bypass and colocation explicitly out of scope. The
+boundary is where the measurement stops being meaningful, not where the work
+stopped.
 
 **Two cheap upgrades that close part of the gap** (both simulator-side):
 A/B arbitration (two simulator instances, independent injected drops,

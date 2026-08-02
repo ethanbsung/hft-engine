@@ -48,9 +48,8 @@ not a live venue.
 > directly from disk. **MoldUDP64/UDP is the live multicast transport** and is
 > the target below, but it is not built — see feed-handler.md §2.
 
-**North star:** learning + resume artifact. The end result should be
-defensible in an HFT interview: correct, measured, honestly scoped, and
-architected the way real systems are.
+**North star:** correct, measured, honestly scoped, and architected the way
+real systems are — every claim in these docs backed by something that was run.
 
 ---
 
@@ -146,9 +145,9 @@ I/O↔hot** — that's where you build and learn the lock-free primitive,
 because that's where it belongs. You do **not** sprinkle queues between
 hot stages where they would only add latency.
 
-> Being able to explain *why the cold path gets the queue and the hot
-> path doesn't* is a strong interview signal. That's the whole point of
-> building it this way.
+> The asymmetry is the point: the cold path gets the queue precisely
+> because it can absorb the ~40–100 ns hand-off, and the hot path doesn't
+> because it can't.
 
 ---
 
@@ -245,7 +244,7 @@ interface the simulator implements, so a live gateway drops in later.
 
 ## 6. Realism scope & phasing
 
-### Phase 1 — get it running (the resume artifact)
+### Phase 1 — a complete, measured loop
 Portable (macOS dev / Linux measure), correct, measured. Single hot
 thread; normalized agnostic core; real **L3 order book** driven by real
 ITCH; **MoldUDP64 sequence-gap detection + retransmit recovery**; real
@@ -270,11 +269,10 @@ primary feed.)*
   help*, and what replay structurally cannot measure.
 
 > **Why phase it this way:** kernel bypass, FPGA, hardware timestamping,
-> and co-location require an exchange contract and a rack. **Knowing why
-> *not* to use something, and proving you understand it, is a stronger
-> signal than a half-broken DPDK integration.** Resume line:
-> *"characterized the latency budget and documented where kernel-bypass
-> would and wouldn't help."*
+> and co-location require an exchange contract and a rack. Characterizing
+> the latency budget and documenting where kernel-bypass would and wouldn't
+> help is achievable here and is actually true; a half-broken DPDK
+> integration would be neither.
 >
 > Note the honest boundary (feed-handler.md §7): on loopback, `recvmmsg`
 > pays syscall + softirq costs that a kernel-bypass NIC eliminates — so

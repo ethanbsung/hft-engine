@@ -122,7 +122,7 @@ require the x86 TSC (GHz resolution). Hence the VM.
 - **Virtualization:** KVM guest (`pc-i440fx`) — **not bare metal**. Stated
   honestly; a hypervisor sits under this.
 
-### TSC / timing caveats (the interview-honest part)
+### TSC / timing caveats
 - `constant_tsc` **present** → TSC ticks at a fixed rate regardless of core
   frequency, so ticks→ns is stable. This is the flag that governs
   measurement validity, and we have it.
@@ -396,7 +396,7 @@ entry after each of 20 000 operations.
 
 ---
 
-## 6c. Methodology notes (the part worth reading twice)
+## 6c. Methodology notes
 
 **`perf` pointed at the wrong thing, twice.** Its call graph showed a page-fault
 chain under `OrderBook::OrderBook`, which looked like a conclusive explanation
@@ -438,69 +438,41 @@ timed region — is more instructive than the eventual answer.
   a stable p99.99.
 - **Replay, not live** — no NIC receive, no wire-to-book end-to-end. The
   number is the *engine's own* dispatch+apply cost, which is exactly the
-  bounded, defensible thing to put a number on.
+  bounded thing to put a number on.
 - **Pre-market data** — the fixture spans 04:00–09:30 ET. Books are thinner and
   quieter than during regular hours, so message rates and book depth are not
   representative of the full session.
+- **No comparison to industry figures.** Firms do not publish per-message
+  book-apply latency, so there is no public number to rank this against. The
+  figures that circulate publicly — sub-microsecond, commonly 1–5 µs — are
+  almost always **tick-to-trade** (NIC in → decision → NIC out), covering
+  network stack, decode, book, strategy, risk and order encoding. The 123 ns
+  here is one stage inside that path and is not comparable to those figures.
+  The genuinely fast book implementations are FPGAs, at tens of nanoseconds for
+  decode-and-update — a hardware comparison, not a software one.
+- **No optimisation pass.** Everything measured so far removed a pathology;
+  nothing has yet targeted the common path.
+
+**On the magnitude, from first principles.** ~110 ns at 2.694 GHz is ~300 cycles
+for a hash probe, a level access, a list unlink and a three-tier bitmap update.
+An L3 hit is ~40 cycles and a DRAM miss ~200–300, so that budget is consistent
+with a couple of cache misses plus real work — the number is physically
+plausible for what the code does, which is a claim that rests on hardware
+behaviour rather than on an unpublished benchmark. The 73% cache-miss rate in §5
+is consistent with it.
+
+**Latency, not throughput, is the meaningful figure here.** The 74.8 M msgs/sec
+is dominated by the ~99% of messages that early-out on a non-watchlist symbol,
+so it mostly measures the framing loop rather than the book.
 
 ---
 
-## 8. How to state this honestly
-
-The defensible one-line claim:
-
-> **p50 123 ns / p99 426 ns per-message dispatch + apply**, over 862 k applied
-> Nasdaq TotalView-ITCH 5.0 messages across 7 symbols, on a pinned x86 core at
-> 2.694 GHz. Instrumentation overhead (34–36 cycles) measured and included;
-> net ≈110 ns.
-
-Calibration, so this is neither oversold nor undersold:
-
-- **There is no public number to rank this against, and claiming one is a
-  trap.** Firms do not publish per-message book-apply latency; it is
-  competitive information. The figures that circulate publicly —
-  sub-microsecond, commonly 1–5 µs — are almost always **tick-to-trade**
-  (NIC in → decision → NIC out), which includes network stack, decode, book,
-  strategy, risk and order encoding. Your 123 ns is *one stage inside that
-  path*, so it is not comparable to those figures and should never be
-  presented as if it were. If asked "how does this compare?", the correct
-  answer is that the comparison does not exist, followed by what the number
-  *is* a measurement of.
-- **What can be said about the magnitude, from first principles:** ~110 ns at
-  2.694 GHz is ~300 cycles for a hash probe, a level access, a list unlink and
-  a three-tier bitmap update. An L3 hit is ~40 cycles and a DRAM miss ~200–300,
-  so that budget is consistent with a couple of cache misses plus real work —
-  i.e. the number is *physically plausible for what the code does*, which is a
-  claim that can be defended by reasoning rather than by an appeal to
-  unpublished benchmarks. The 73% cache-miss rate in §5 supports it.
-- **The genuinely fast book implementations are FPGAs**, where decode-and-update
-  runs in tens of nanoseconds. That is a hardware comparison, not a software
-  one.
-- **No optimisation pass has been done.** Everything so far removed a
-  pathology; nothing has yet targeted the common path. Say this before someone
-  asks.
-- **The throughput number is the weaker one.** 74.8 M msgs/sec is dominated by
-  the ~99% of messages that early-out on a non-watchlist symbol. Leading with
-  it invites a fair objection. Lead with p50.
-- **What is actually strong is the methodology**, and that is the part worth
-  defending: a distribution rather than an average, 20 runs with the spread
-  disclosed, timer overhead quantified rather than hidden, and correctness
-  (`not_found = 0`, no crossed books) verified on the same replay that produced
-  the timings.
-- **The strongest single item is not a number at all** — it is that the
-  measurement process found two real bugs (§6, §6b), and that the reasoning
-  which isolated them is reproducible and written down.
-
----
-
-## 9. Open items
+## 8. Open items
 
 1. **An optimisation pass on the common path.** Everything so far removed a
    pathology; nothing has yet made the 110 ns itself faster. `add_order` is 13%
    of self time and the cache-miss rate is 73% — the ref-index probe is the
-   obvious first suspect (layout, prefetch, or a cheaper mix). This would turn
-   "I fixed a defect" into "I profiled and optimised the hot path", which is a
-   stronger claim.
+   obvious first suspect (layout, prefetch, or a cheaper mix).
 2. **A full-session fixture.** The current one ends at 09:30 ET, so the
    end-of-day invariant (book empty after the closing `S` message) cannot be
    asserted, and all numbers come from pre-market flow.

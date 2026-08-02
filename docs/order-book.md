@@ -350,8 +350,8 @@ factor, layout), not to decide whether to move off a `std::map` baseline.
       `std::unordered_map` (`tests/test_ref_index.cpp`)
 - [x] Cross-check: full 500 MB replay leaves all 7 books uncrossed with
       `not_found_ == 0`, matching an independent scan of the raw ITCH bytes
-- [x] Benchmark apply + best query (Linux, pinned) — first pass done; needs
-      re-running post-fix, see `docs/benchmarks.md` §8
+- [x] Benchmark apply + best query (Linux, pinned) — re-run post-fix; results
+      in `docs/benchmarks.md` §5
 - [ ] Assert book empty after end-of-day `S` message (needs a full-session
       fixture; the current one ends at 09:30 ET)
 - [ ] Staleness signal: promote `not_found_` from counter to per-symbol health

@@ -9,8 +9,8 @@ to hand messages between threads **without locks and without allocation**.
 Used at the **hot↔cold** and **I/O↔hot** boundaries (ARCHITECTURE §3) —
 *not* between hot stages.
 
-This is the flagship lock-free learning exercise. Build it once, correctly,
-and understand every line.
+The design points below are the whole reason to hand-roll this rather than
+reach for a library queue — each one is a specific, measurable decision.
 
 ## Where it's used
 - Socket reader → hot thread (raw frames)
