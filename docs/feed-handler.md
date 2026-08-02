@@ -40,7 +40,7 @@ interface, which is fine when both are versioned together.
 
 (The full reasoning — why the old `BookDelta` price-level type couldn't
 represent L3 ITCH, and why a `std::variant` normalized event isn't worth it
-here — is in `interview-prep.md §8`.)
+here — is in `design-decisions.md §8`.)
 
 ---
 
@@ -289,7 +289,7 @@ times so microbursts are reproduced and p99.9 is real.
 **Decided (§1)**
 - [x] Event representation: no event struct; decoder `switch` calls book
       methods directly. `U` → single `replace_order` (§3.1). `BookDelta`
-      dropped from the codebase; rationale lives in `interview-prep.md §8`.
+      dropped from the codebase; rationale lives in `design-decisions.md §8`.
 
 **Sequence: BinaryFILE-first, then Mold, then simulator.** Decode is pure
 logic testable against the 281 MB fixture with the histogram as oracle and
@@ -297,12 +297,15 @@ no socket to debug. Mold framing and the simulator come only after decode is
 proven.
 
 **ITCH (do first)**
-- [ ] BinaryFILE reader: `[u16 BE len][payload]`, streamed
-- [ ] ITCH decoder: explicit offsets + `bswap`, **no packed structs**;
+- [x] BinaryFILE reader: `[u16 BE len][payload]`, streamed
+- [x] ITCH decoder: explicit offsets + `bswap`, **no packed structs**;
       `switch` on type byte calling book methods (§1)
+- [x] L3 book from `A`/`F`/`E`/`C`/`X`/`D`/`U` — end-to-end fixture replay in
+      `tests/test_feed_handler.cpp`, checked against an independent Python pass
+      over the same bytes (293 482 framed messages; SPY book sane and uncrossed)
 - [ ] Type-histogram test vs. spec lengths (reference: 9,979,810 msgs, 0
-      mismatches over the first 295 MB)
-- [ ] L3 book from `A`/`F`/`E`/`C`/`X`/`D`/`U`
+      mismatches over the first 295 MB) — the count was verified by hand during
+      bring-up but is not pinned by a test
 - [ ] Heap-allocation counter test: replay fixture, `operator new` count
       flat after warm-up (§5)
 

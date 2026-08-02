@@ -15,3 +15,8 @@ dead/tests/fixtures/
 *.itch
 
 .vscode
+
+# Local-only notes. The public design rationale lives in
+# docs/design-decisions.md; these are personal working copies.
+docs/interview-prep.md
+docs/architecture.html

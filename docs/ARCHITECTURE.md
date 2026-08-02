@@ -4,11 +4,24 @@
 > Decisions here are deliberate and explained; when a decision changes,
 > change it *here* first, then in code.
 
+> ### ⚠️ Built vs. designed
+>
+> **What runs today:** a single-threaded replay — BinaryFILE
+> (`[u16 BE len][payload]`) → ITCH decode → order book, all as direct function
+> calls in one process. No sockets, no threads, no queues.
+>
+> **What is design-only below:** the MoldUDP64/UDP transport, the feed simulator
+> process, the socket-reader and logger threads, sequence-gap detection and
+> recovery, and everything downstream of the book (strategy, risk, execution
+> simulator). These sections describe the **target** architecture and are marked
+> where they appear. The module index in §8 is the authoritative
+> built/not-built status.
+
 This document is the source of truth for the **overall shape** of the
-system. Each module has its own file in this directory
-(`docs/<module>.md`) with its responsibility, interface, data
-structures, latency notes, and a "done" checklist. Start here, then
-open the module file when you sit down to build that module.
+system. Each module has its own file — built components in `docs/`, unbuilt ones
+in `docs/design/` — with its responsibility, interface, data structures, latency
+notes, and a "done" checklist. Start here, then open the module file when you sit
+down to build that module.
 
 ---
 
@@ -27,9 +40,13 @@ unavailable to an individual without an exchange contract and a rack**
 rather than pretend to run them.
 
 **The feed is Nasdaq TotalView-ITCH 5.0**, replayed from real exchange
-capture over MoldUDP64/UDP. Not a vendor-normalized copy — the actual
-bytes Nasdaq's matching engine emits. Market-data-only: fills come from
-the execution simulator, not a live venue.
+capture. Not a vendor-normalized copy — the actual bytes Nasdaq's matching
+engine emits. Market-data-only: fills would come from the execution simulator,
+not a live venue.
+
+> Replay today reads the capture as **BinaryFILE** (`[u16 BE len][payload]`)
+> directly from disk. **MoldUDP64/UDP is the live multicast transport** and is
+> the target below, but it is not built — see feed-handler.md §2.
 
 **North star:** learning + resume artifact. The end result should be
 defensible in an HFT interview: correct, measured, honestly scoped, and
@@ -39,26 +56,28 @@ architected the way real systems are.
 
 ## 2. The core insight that shapes every priority
 
-**Under replay there is no network and no exchange floor.** Packets come
-off a local UDP socket fed by our own simulator. That inverts the
-reasoning this section used to carry (which assumed a ~5,000µs crypto
-WebSocket round-trip, against which your own code was invisible):
+**Under replay there is no network and no exchange floor.** Messages come from
+a local capture file, so there is no exchange round-trip to hide behind. That
+inverts the reasoning this section used to carry (which assumed a ~5,000µs
+crypto WebSocket round-trip, against which your own code was invisible):
 
 **Decode + book-update cost is now the entire measurable number.** The
 nanosecond craft stops being *only* a learning exercise and becomes the
-thing actually under measurement. There is nowhere to hide.
+thing actually under measurement. There is nowhere to hide. This is borne out —
+it is exactly what `docs/benchmarks.md` measures.
 
 Two goals, both first-class:
 
 1. **Nanosecond craft** (ring buffers, order book, cache discipline,
    lock-free hand-offs, latency measurement). Built to production
-   standard, and now genuinely measurable end-to-end.
+   standard, and genuinely measurable.
 2. **Correctness of order book state**, especially **sequence-gap
    detection and recovery**. Feeds drop packets: the stream stays live,
    the sequence number jumps, and you silently missed messages — your
    book is now wrong. On ITCH this is detected at the **MoldUDP64** layer
    and repaired by **retransmit request** (ITCH has no snapshot message).
-   A **first-class module**, not a footnote.
+   A **first-class module**, not a footnote — *and not yet built; the current
+   BinaryFILE replay has no sequence numbers to check.*
 
 Both goals reinforce each other. Neither is sacrificed for the other.
 
@@ -101,7 +120,11 @@ thread without wrecking it:
 - **Independent I/O:** the socket read and the order-send write are their
   own threads so the strategy thread never blocks on a syscall.
 
-### The threads this system actually runs
+### The threads this system will run
+
+> **Not built.** Replay today is single-threaded: decode and book apply are
+> direct calls in one process, with no sockets and no queues. The table below is
+> the target layout.
 
 | Thread | Role | Hot? |
 |---|---|---|
@@ -173,7 +196,12 @@ The trick is the **normalized internal event** — venue-neutral:
 
 ---
 
-## 5. Data flow (Phase 1: full loop to simulated fills)
+## 5. Data flow (Phase 1 target: full loop to simulated fills)
+
+> **Target, not current.** Built today: the first two boxes only — framing and
+> decode into the order book, single-threaded, off a BinaryFILE capture. The
+> socket reader, gap detection/recovery, strategy, risk, execution simulator,
+> and telemetry taps below are all designed but unbuilt.
 
 ```
  MoldUDP64/UDP packets   (from the feed simulator process)
@@ -274,11 +302,11 @@ primary feed.)*
 | Feed Handler | [feed-handler.md](feed-handler.md) | 1 | 🚧 BinaryFILE + ITCH decode (A/F/D/C/E/X/U/P) done; MoldUDP64 transport + gap detection TODO |
 | Order Book | [order-book.md](order-book.md) | 1 | ✅ apply path, queries, fixed window, 3-tier bitmap; benchmarked |
 | Latency Harness | [latency-harness.md](latency-harness.md) | 1 | 🚧 timing tap + percentile reporting in `bench/`; no staged taps yet |
-| Ring Buffer (SPSC) | [ring-buffer.md](ring-buffer.md) | 1 | ⬜ not started (single-threaded replay so far) |
-| Strategy | [strategy.md](strategy.md) | 1 | ⬜ not started |
-| Risk | [risk.md](risk.md) | 1 | ⬜ not started |
-| Execution Simulator | [execution-simulator.md](execution-simulator.md) | 1 | ⬜ not started |
-| Order Gateway (live) | [order-gateway.md](order-gateway.md) | 1.5 | ❌ N/A — ITCH is market data, no order entry |
-| Threading & Wiring | [threading.md](threading.md) | 1 | ⬜ not started |
+| Ring Buffer (SPSC) | [ring-buffer.md](design/ring-buffer.md) | 1 | ⬜ not started (single-threaded replay so far) |
+| Strategy | [strategy.md](design/strategy.md) | 1 | ⬜ not started |
+| Risk | [risk.md](design/risk.md) | 1 | ⬜ not started |
+| Execution Simulator | [execution-simulator.md](design/execution-simulator.md) | 1 | ⬜ not started |
+| Order Gateway (live) | [order-gateway.md](design/order-gateway.md) | 1.5 | ❌ N/A — ITCH is market data, no order entry |
+| Threading & Wiring | [threading.md](design/threading.md) | 1 | ⬜ not started |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started

@@ -2,11 +2,36 @@
 
 The numbers this project is allowed to claim, and *exactly* how they were
 produced. No latency number is stated anywhere in this project that was not
-measured on the methodology below. This doc is the source of truth for
-"what's the number" and the script for defending it in an interview.
+measured by the methodology below. This doc is the source of truth for what the
+number is and what it rests on.
 
 Companion docs: `latency-harness.md` (design of the measurement seam),
-`interview-prep.md` (design-decision cheat sheet).
+`design-decisions.md` (the design decisions behind the engine and their
+tradeoffs).
+
+---
+
+## Summary
+
+Per-message **dispatch + apply** — one framed ITCH payload decoded and applied
+to the order book — over **862 057 applied messages** across 7 symbols, on a
+pinned x86 core at 2.694 GHz:
+
+| Percentile | Median | Range across 20 runs |
+|---|---|---|
+| **p50** | **123 ns** | 120.24 – 126.18 |
+| **p99** | **426 ns** | 423.08 – 431.26 |
+| **p99.9** | **590 ns** | 577.47 – 601.98 |
+
+Instrumentation overhead is **34–36 cycles (12.6–13.4 ns)**, measured and
+**included** in every figure above — the engine's own cost is ≈110 ns at p50.
+
+Conditions in one line: Intel Xeon Platinum 8280, Ubuntu 24.04, **KVM guest, not
+tuned bare metal**; replay from a local file, not wire-to-book; pre-market flow.
+Full detail in §4, and **§7 lists what these numbers explicitly do not claim.**
+
+The measurement process also found two correctness bugs — §6 (a window-recentre
+policy corrupting book state) and §6b (a hash-table `erase` orphaning orders).
 
 ---
 
@@ -126,8 +151,8 @@ taskset -c 1 ./build-perf/bench_feed
 
 ## 5. Results
 
-Raw output in `vm_results_after.txt` (repo root); the superseded pre-fix run is
-kept in `vm_results_before.txt` for the comparison in §6.
+Raw output in `bench/results/vm_results_after.txt`; the superseded pre-fix run is
+kept in `bench/results/vm_results_before.txt` for the comparison in §6.
 
 **Environment:** Intel Xeon Platinum 8280 @ 2.70 GHz (Cascade Lake),
 DigitalOcean CPU-Optimized 2 vCPU / 4 GB, Ubuntu 24.04 / 6.8.0-124-generic, KVM
@@ -168,13 +193,6 @@ see §2 for why the overhead is disclosed rather than subtracted.
 dominated by TSLA's 821. Correctness and performance measured on the same
 replay, so the numbers describe a book that is actually right.
 
-> **Why throughput (14 ns) < latency p50 (120 ns) — not a contradiction.**
-> `bench_feed` times *all* framed messages; ~99% are non-watchlist symbols
-> that hit `books.get(locate) → nullptr → return` (a cheap early-out),
-> amortizing the average down. `bench_latency` times *only* the ~862k
-> **applied** watchlist messages that actually mutate a book — the real
-> per-op cost. Different denominators, both honest.
-
 ### `perf stat` (hardware counters, `bench_feed`)
 ```
 instructions     17_817_911_865
@@ -195,10 +213,10 @@ discussing the decode path.
 - **`cycles` read as 0** on this KVM guest — the cycle PMU is gated even
   though the instruction counter works. So **IPC is not claimed** (it needs
   valid cycles). Honest limitation of the environment.
-- **81% cache-miss looks alarming but is expected:** `bench_feed` streams a
+- **73% cache-miss looks alarming but is expected:** `bench_feed` streams a
   500 MB buffer once, linearly, with no reuse — nearly all misses are
   *compulsory* (cold), not a locality bug. The hardware prefetcher hides the
-  latency (throughput stays at 71 M/s). Branch prediction is healthy (0.99%).
+  latency (throughput stays at 74.8 M/s). Branch prediction is healthy (1.21%).
 
 ### `perf record` — where time goes (`bench_latency`, frame-pointer unwinding)
 Children view:
@@ -219,31 +237,33 @@ std::__introsort_loop  7.8%   (std::sort of samples — bench bookkeeping,
 `add_order` self time fell from 19.5% pre-fix to 13.2%, which is the recentre
 path leaving the hot function.
 
+**Two things about this profile are easy to misread.**
+
 **The page-fault chain is real but is not in the histogram.** It is the kernel
 committing each book's ~4 MB of arrays on first touch, inside the `OrderBook`
 constructor, which runs from the `R` (directory) branch of `decode_message` —
-and that branch returns *before* the `if constexpr (Timing)` block. It is
-startup cost, correctly excluded from per-message numbers, and not something to
-"fix". An earlier version of this document mistook it for the tail; see §6c.
-**Note on reading this profile — recenter is invisible here but IS the tail.**
-`recenter()` is called from inside `add_order` and is inlined under LTO, so its
-cost is attributed to `add_order`/`main` rather than appearing as its own frame.
-The page-fault chain under `OrderBook::OrderBook` is real but is **not** the
-histogram tail: the `R` (directory) branch of `decode_message` returns *before*
-the `if constexpr (Timing)` block, so book construction is never sampled into
-`LatencySink`. See §6 — the tail was isolated by direct instrumentation, not by
-this profile.
+and that branch returns *before* the `if constexpr (Timing)` block, so book
+construction is never sampled into `LatencySink`. It is startup cost, correctly
+excluded from per-message numbers, and not something to "fix". An earlier
+version of this document mistook it for the tail; see §6c.
+
+**Recenter is invisible here but *was* the tail.** `recenter()` was called from
+inside `add_order` and inlined under LTO, so its cost was attributed to
+`add_order`/`main` rather than appearing as its own frame. The tail was isolated
+by direct counter instrumentation, not by this profile — see §6.
 
 ---
 
-## 6. Interpreting the tail (interview story)
+## 6. Interpreting the tail — how a 15 981 ns p99.9 was traced and removed
 
 The p50 is the common case: dispatch + a slot mutation in the preallocated
-pool + a touch-bitmap update — ~120 ns.
+pool + a touch-bitmap update — 123 ns.
 
-**The p99.9 tail is `recenter()` — specifically its `rebuild_bitmap()` scan.**
-Isolated by direct instrumentation, not by the profile (recenter inlines into
-`add_order` under LTO, so it has no frame of its own in `perf report`).
+The tail was a different story. Before the fix described below, p99.9 sat at
+**15 981 ns** against that ~120 ns p50. **The cause was `recenter()` —
+specifically its `rebuild_bitmap()` scan.** It was isolated by direct
+instrumentation, not by the profile (recenter inlined into `add_order` under
+LTO, so it had no frame of its own in `perf report`).
 
 ### The evidence
 Counting samples ≥ 5 µs against the book's own `recenters_` counter, per run:

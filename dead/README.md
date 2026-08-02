@@ -3,8 +3,8 @@
 Not built, not tested, not included by anything. Kept for reference only.
 
 These files implemented the **Coinbase WebSocket JSON L2 feed**, which was
-abandoned in favor of **Nasdaq TotalView-ITCH 5.0** replayed over
-MoldUDP64/UDP (see `docs/feed-handler.md`).
+abandoned in favor of **Nasdaq TotalView-ITCH 5.0** replayed from a BinaryFILE
+capture (see `docs/feed-handler.md`).
 
 | File | Was | Why retired |
 |---|---|---|

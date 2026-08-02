@@ -19,7 +19,7 @@ you haven't measured is a number you may not claim (see `benchmarks.md`).
   strategy-decided → order-built → (sim) fill. Store `nanos_t` timestamps
   and diff adjacent stages.
 - **End-to-end:** recv_ts → order-out.
-- **The plumbing:** ring buffer push/pop (see ring-buffer.md benchmark).
+- **The plumbing:** ring buffer push/pop (see design/ring-buffer.md benchmark).
 
 ### Your-code latency = later stage − `recv_ts` (the number that's yours)
 The most important, most resume-relevant number is **your own pipeline's
