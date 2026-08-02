@@ -271,14 +271,14 @@ primary feed.)*
 | Module | File | Phase | Status |
 |---|---|---|---|
 | Types & SymbolTable | [types.md](types.md) | 1 | ✅ started |
-| Feed Handler | [feed-handler.md](feed-handler.md) | 1 | 🚧 parsing done, sequencing TODO |
-| Ring Buffer (SPSC) | [ring-buffer.md](ring-buffer.md) | 1 | ⬜ not started |
-| Order Book | [order-book.md](order-book.md) | 1 | ⬜ not started |
+| Feed Handler | [feed-handler.md](feed-handler.md) | 1 | ✅ MoldUDP64 + ITCH decode (A/F/D/C/E/X/U/P); sequencing TODO |
+| Order Book | [order-book.md](order-book.md) | 1 | ✅ apply path, queries, fixed window, 3-tier bitmap; benchmarked |
+| Latency Harness | [latency-harness.md](latency-harness.md) | 1 | 🚧 timing tap + percentile reporting in `bench/`; no staged taps yet |
+| Ring Buffer (SPSC) | [ring-buffer.md](ring-buffer.md) | 1 | ⬜ not started (single-threaded replay so far) |
 | Strategy | [strategy.md](strategy.md) | 1 | ⬜ not started |
 | Risk | [risk.md](risk.md) | 1 | ⬜ not started |
 | Execution Simulator | [execution-simulator.md](execution-simulator.md) | 1 | ⬜ not started |
-| Order Gateway (live) | [order-gateway.md](order-gateway.md) | 1.5 | ⬜ deferred |
-| Latency Harness | [latency-harness.md](latency-harness.md) | 1 | ⬜ not started |
+| Order Gateway (live) | [order-gateway.md](order-gateway.md) | 1.5 | ❌ N/A — ITCH is market data, no order entry |
 | Threading & Wiring | [threading.md](threading.md) | 1 | ⬜ not started |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started

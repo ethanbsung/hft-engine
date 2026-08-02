@@ -1,7 +1,12 @@
 # Module: Latency Harness
 
-**File(s):** `include/hft/latency.hpp` (to create); builds on `platform::now_ns()`
-**Phase:** 1 · **Status:** ⬜ not started
+**File(s):** `include/hft/latency_sink.hpp`; percentile reporting in
+`bench/bench_latency.cpp`; builds on `platform::now_ns()` / TSC reads
+**Phase:** 1 · **Status:** 🚧 partial — a compile-time-gated (`template<bool
+Timing>`) tap around dispatch+apply plus p50/p99/p99.9 reporting are working
+and produced the numbers in `docs/benchmarks.md`. The staged multi-tap design
+below (per-stage timestamps through the pipeline) is **not** built; there is
+one tap, not a chain.
 
 ## Responsibility
 Measure the system's own latency **honestly**. Timestamp taps between
