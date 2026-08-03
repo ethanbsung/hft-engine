@@ -4,9 +4,10 @@ The design decisions in this engine and the reasoning behind each: what was
 chosen, what the alternatives were, why this one, and the conditions under which
 the other choice wins.
 
-Each decision below is one that could reasonably have gone the other way. Where
-a decision was made wrongly the first time and corrected — §5 and §4 in
-particular — the original reasoning and the correction are both recorded.
+Each decision below is one that could reasonably have gone the other way. Two
+were made wrongly the first time (§4, §5); the reasoning that produced the
+error is kept alongside the correction, since the failure mode is a property of
+the design, not an accident. The bugs themselves are in the README.
 
 ---
 
@@ -115,42 +116,18 @@ valid. Tombstones are simpler but accumulate and slow probes; backward-shift
 keeps the table clean at the cost of more work per erase, and of the subtlety
 described next.
 
-### The bug this design invited
+**The failure mode this choice invites.** Backward-shift's correctness rests on
+one subtle invariant: shift `slots_[j]` into `hole` only when its ideal bucket
+falls *outside* the cyclic interval `(hole, j]`, recomputing both distances from
+the *current* hole every iteration, since the hole moves. Getting that wrong
+orphans entries in collision chains of length ≥ 3, which is exactly the bug this
+implementation shipped with and the README describes. It is now covered by 6
+collision-chain tests and a differential fuzz against `std::unordered_map`.
 
-The backward-shift loop computed distances through a lambda capturing `hole` by
-reference, while reassigning `hole` inside the loop. After the first shift, the
-comparison measured from a different origin than it started with, so entries
-needing relocation were skipped — and `find`, which stops at the first empty
-slot, then hit the stale hole and gave up. Refs beyond it became permanently
-unreachable.
-
-Minimal case: three refs colliding into one bucket; erase the first, and the
-*third* is orphaned. It requires a probe chain of length ≥ 3 to appear, which is
-why every hand-written unit test missed it.
-
-On a real replay: 543 orders whose delete/execute could no longer resolve stayed
-resting forever, leaving **6 of 7 books crossed** — TSLA showing bid \$644.00
-against ask \$624.50. A market maker quoting off that book is quoting a \$19.50
-phantom arbitrage.
-
-Two things about how it was found are worth recording. First, the symptom
-surfaced during a *latency* investigation — the crossed books turned up only
-because a full-fixture replay was being sanity-checked before publishing
-benchmark numbers. Second, what settled it was **differential testing**: an
-independent Python scan of the raw ITCH bytes proved the feed contained zero
-messages referencing unknown refs, which meant the data was self-consistent and
-the book had to be losing orders on its own. The fix is verified by a fuzz test
-against `std::unordered_map` checking every live entry after each of 20 000
-operations.
-
-**The correct invariant:** shift `slots_[j]` into `hole` only when its ideal
-bucket falls *outside* the cyclic interval `(hole, j]` — recomputing both
-distances from the *current* hole every iteration, since the hole moves.
-
-**Why not tombstones:** they are simpler and immune to this class of bug, but
-they accumulate, lengthen probes, and require periodic rehashing.
-Backward-shift keeps probes short at the cost of exactly the subtlety above.
-Each design invites its own failure mode; this one's is now covered by tests.
+**Why not tombstones:** they are simpler and immune to that class of bug, but
+they accumulate, lengthen probes, and require periodic rehashing. Backward-shift
+keeps probes short at the cost of exactly the subtlety above. Each design
+invites its own failure mode.
 
 ### The `ref == 0` subtlety
 
@@ -187,17 +164,8 @@ specific reason: **the trigger was wrong.** `add_order` re-centred the window
 whenever an incoming order landed outside it. So a single deep resting order —
 someone's standing bid \$25 below the market — dragged the entire window onto
 itself, **evicting the near-mid book**, and the next normal add dragged it back.
-
-Measured on a real session: **2 124 recentres per replay, ~14 000 resting orders
-evicted**, and an equal number of subsequent lookups failing to find their
-order.
-
-It was also the entire latency tail. Each recentre ran `rebuild_bitmap()`, an
-O(window) rescan, and the counts matched 1:1 — 2 124 recentres against ~2 150
-samples over 5 µs. Removing it took **p99.9 from 15 981 ns to 590 ns** on
-Linux/x86 — a 27× reduction, with p50 and p99 unchanged. That combination is the
-signature of removing a rare expensive path rather than speeding up the common
-one.
+That cost ~14 000 evicted orders and a 27× worse p99.9 per replay; the README
+has the measurements.
 
 **What real desks do:** most equities books use a fixed absolute price array
 sized from the previous close, because the memory is irrelevant (a few MB) and
@@ -205,7 +173,7 @@ it removes an entire class of bug. Sliding windows appear where price ranges are
 genuinely unbounded (futures, FX) or memory is constrained (FPGA) — and there
 the window follows **the touch**, with hysteresis, never a single incoming
 order. An out-of-window order goes to the overflow path; it is not a reason to
-move the window.
+move the window. The defect above was in the trigger, not in the structure.
 
 **Tradeoff:** the fixed window cannot follow a symbol that moves more than ±27%
 intraday. That is the correct behaviour — past LULD halt bands the exchange has
@@ -349,79 +317,30 @@ packets.
 
 ---
 
-## 11. Measurement — method, and what it found
+## 11. A compile-time timing seam, not a runtime flag
 
-**Decision:** Per-message latency is measured with the CPU cycle counter,
-fenced, compiled in only for the benchmark build, over 862 k applied messages of
-real ITCH, and reported as a distribution across 20 runs. Full methodology in
+**Decision:** The decode path is templated on `<bool Timing>`. `decode<false>`
+is production and compiles the instrumentation *out* via `if constexpr` — the
+counter reads and the `LatencySink` call are absent from the emitted code, not
+branched around. `decode<true>` is the benchmark build.
+
+**Why not the alternatives:**
+- A **runtime flag** leaves a branch and the clock-read call on the hot path in
+  production, paying for measurement nobody is collecting.
+- **`#ifdef`** would work but splits the codebase into two configurations that
+  drift; the template keeps one body of code with both instantiations compiled
+  and tested.
+- **Sampling externally** (`perf record` alone) cannot bracket a specific region
+  at ns resolution, and — as it turned out — attributes inlined functions to
+  their callers, which is how the tail hid.
+
+**What this costs:** the timed and untimed paths are different template
+instantiations, so in principle they could optimise differently. Verified they
+don't by checking throughput is unchanged between them.
+
+The measurement built on this seam is what surfaced both bugs above (§4, §5),
+neither of which was a performance defect. Method, results, and limits:
 [benchmarks.md](benchmarks.md).
-
-**The measured result:** **p50 123 ns / p99 426 ns / p99.9 590 ns** on a pinned
-core of a Xeon 8280 at 2.694 GHz; instrumentation overhead 34–36 cycles, so net
-≈110 ns. p50 spans 120.24–126.18 ns across all 20 runs.
-
-**The technique points that matter:**
-- **Cycle counter, not `clock_gettime`.** Per-message work is tens of ns; a
-  ~25 ns clock read would dominate what it measures.
-- **`rdtsc` is fenced** (`lfence; rdtsc; lfence`). `rdtsc` is not serialising —
-  unfenced, the CPU reorders work across it and the measurement window fails to
-  bracket the code under test.
-- **Zero cost in production.** The decode path is templated on `<bool Timing>`;
-  `decode<false>` compiles the instrumentation *out* via `if constexpr` — absent
-  from the emitted code, not merely branched around.
-- **Median of per-run percentiles with the range**, never the mean and never
-  samples pooled across runs — pooling would hide exactly the run-to-run
-  variance the repeated runs exist to expose.
-- **Known limits:** no NIC receive, no wire-to-book, a KVM guest rather than bare
-  metal, and the `cycles` PMU gated on that guest, so **IPC is not claimed**.
-
-### On comparing this number to anything
-
-There is no published per-message book-apply latency to rank against; firms do
-not release it. The public figures — sub-microsecond, commonly 1–5 µs — are
-almost always **tick-to-trade**: NIC in → decision → NIC out, covering network
-stack, decode, book, strategy, risk, and encoding. 123 ns is *one stage inside
-that path*, so the comparison is not available in either direction.
-
-What can be defended is the magnitude, from first principles: ~110 ns at
-2.694 GHz is ~300 cycles for a hash probe, a level access, a list unlink, and a
-three-tier bitmap update. An L3 hit is ~40 cycles and a DRAM miss ~200–300, so
-that budget is consistent with a couple of cache misses plus real work. The 73%
-cache-miss rate corroborates it. That reasoning rests on hardware behaviour
-rather than on an unpublished benchmark.
-
-Two further caveats stated plainly: the p50 is the number to quote, not the
-74.8 M msgs/sec throughput, which is dominated by messages that early-out on a
-non-watchlist symbol and mostly measures the framing loop. And **no optimisation
-pass has been done** — every improvement so far removed a pathology; nothing has
-yet targeted the common path.
-
-### Two bugs that only the measurement caught
-
-Both were found because a latency number was being prepared for publication, and
-both turned out to be *correctness* bugs, not performance ones:
-
-1. **The recentre policy** (§5) — a fat p99.9 traced to 2 124 window moves per
-   replay, each evicting resting orders. The tail was the symptom; silent book
-   corruption was the disease. Fixing it took p99.9 from 15 981 ns to 590 ns
-   (27×) while leaving p50 and p99 unchanged.
-2. **`RefIndex::erase`** (§4) — a sanity check before publishing found 6 of 7
-   books ending **crossed**. Root cause was a backward-shift deletion bug
-   orphaning entries in collision chains.
-
-### The methodology lesson: profiles point, they don't prove
-
-The first hypothesis for the tail was wrong, and `perf` *reinforced* the wrong
-answer — it showed a page-fault chain under the book constructor, which looked
-conclusive. It was not, because that code path returns before the timing block
-and was never in the histogram at all.
-
-What actually settled it: (a) checking whether the proposed cause was even
-inside the measured region, which alone eliminated the page-fault theory; (b)
-direct counter instrumentation showing a 1:1 match between recentres and tail
-samples, which no profile could have shown because `recenter` inlined into
-`add_order` under LTO; and (c) reproducing the tail on a second OS, which a
-first-touch-fault explanation cannot survive.
 
 ---
 
@@ -456,8 +375,10 @@ Layered, weakest to strongest:
 - An **independent Python scan of the raw ITCH bytes** provides ground truth the
   C++ can be checked against.
 
-The last of these is what caught the erase bug: a second implementation, written
-against the spec independently, exists specifically to disagree with the first.
+The last two are the load-bearing ones. Unit tests only check cases someone
+thought of; a differential oracle and an independently-written second
+implementation check cases nobody thought of, which is where both shipped bugs
+were hiding.
 
 ## Cross-references
 - [order-book.md](order-book.md) — the committed book design in detail.
