@@ -349,7 +349,7 @@ packets.
 
 ---
 
-## 11. Measuring honestly — and what the measurement found
+## 11. Measurement — method, and what it found
 
 **Decision:** Per-message latency is measured with the CPU cycle counter,
 fenced, compiled in only for the benchmark build, over 862 k applied messages of

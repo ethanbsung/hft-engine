@@ -48,7 +48,7 @@ not a live venue.
 > directly from disk. **MoldUDP64/UDP is the live multicast transport** and is
 > the target below, but it is not built — see feed-handler.md §2.
 
-**North star:** correct, measured, honestly scoped, and architected the way
+**North star:** correct, measured, explicitly scoped, and architected the way
 real systems are — every claim in these docs backed by something that was run.
 
 ---
@@ -80,7 +80,7 @@ Two goals, both first-class:
 
 Both goals reinforce each other. Neither is sacrificed for the other.
 
-**What replay still cannot measure** (be honest, see feed-handler.md §7):
+**What replay cannot measure** (see feed-handler.md §7):
 kernel-bypass savings (`recvmmsg` pays syscall + softirq costs a
 Solarflare/DPDK box doesn't), microburst arrival dynamics that drive
 p99.9, and anything about colocation or the physical layer.
@@ -251,7 +251,7 @@ ITCH; **MoldUDP64 sequence-gap detection + retransmit recovery**; real
 latency measurement (monotonic-clock taps between stages, via
 `platform::now_ns()`); core pinning where the OS allows (Linux);
 cache-line discipline; full loop to **simulated fills**. A complete,
-honest, production-shaped system.
+complete, production-shaped system.
 
 The **feed simulator** (BinaryFILE → MoldUDP64 → UDP, with injectable
 gaps / reorders / duplicates) is Phase 1, not an extra. It is what makes
@@ -265,8 +265,8 @@ primary feed.)*
 - **A/B feed arbitration** — two simulator instances, independent injected
   drops, arbitrate by sequence. This is what real ITCH consumers do.
 - A **`docs/` writeup** characterizing the latency budget and stating
-  honestly *where kernel bypass (DPDK/OpenOnload) would and wouldn't
-  help*, and what replay structurally cannot measure.
+  *where kernel bypass (DPDK/OpenOnload) would and wouldn't help*, and what
+  replay structurally cannot measure.
 
 > **Why phase it this way:** kernel bypass, FPGA, hardware timestamping,
 > and co-location require an exchange contract and a rack. Characterizing
@@ -274,7 +274,7 @@ primary feed.)*
 > help is achievable here and is actually true; a half-broken DPDK
 > integration would be neither.
 >
-> Note the honest boundary (feed-handler.md §7): on loopback, `recvmmsg`
+> Note the boundary (feed-handler.md §7): on loopback, `recvmmsg`
 > pays syscall + softirq costs that a kernel-bypass NIC eliminates — so
 > the *savings* from bypass are exactly the thing this setup cannot
 > measure. Say that, don't estimate it.

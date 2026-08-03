@@ -255,7 +255,7 @@ mismatches, **0** unknown types): 4.0M `A`, 3.95M `D`, 1.1M `X`, 577K `U`,
 
 **Gives you faithfully:** the wire format exactly; L3 order-by-order book
 semantics; gap detection and recovery; zero-allocation hot path, cache
-behavior, branch layout; honest decode + book-update cost per message.
+behavior, branch layout; decode + book-update cost per message.
 
 **Cannot give you:**
 - **Kernel bypass.** Production uses Solarflare/Onload, DPDK, or FPGA that

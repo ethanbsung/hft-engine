@@ -143,8 +143,8 @@ back. Measured over one session: **2 124 re-centres, ~14 000 resting orders
 evicted**, and an equal number of later lookups failing. It also owned the
 entire latency tail, since each re-centre ran an O(window) `rebuild_bitmap`;
 removing it took p99.9 from 15 981 ns to 590 ns (27×) on Linux/x86, with p50
-and p99 unchanged. Full write-up in
-`docs/benchmarks.md` §6.
+and p99 unchanged. Write-up in the README; measured effect and how the tail was
+attributed in `docs/benchmarks.md` §4–§5.
 
 A sliding window is legitimate where price ranges are genuinely unbounded
 (futures, FX) or memory is tight — but it must follow **the touch**, with
@@ -216,9 +216,8 @@ replay it should stay **zero**, and on the 500 MB fixture it does. A nonzero
 value means a feed gap (missed the `A`/`F` that introduced the ref), a routing
 bug (e.g. a `P` trade wrongly fed into the book), or — as it turned out — a bug
 in the book itself. It earned its keep: a nonzero `not_found_` was the thread
-that led to the `RefIndex::erase` defect described in `docs/benchmarks.md` §6b,
-which was silently orphaning entries in hash collision chains and leaving books
-crossed.
+that led to the `RefIndex::erase` defect described in the README, which was
+silently orphaning entries in hash collision chains and leaving books crossed.
 
 In a live system this counter would not merely count. Crossing a threshold
 would trip a per-symbol health flag that **stops quoting that symbol** and
@@ -341,7 +340,7 @@ factor, layout), not to decide whether to move off a `std::map` baseline.
       priority)
 - [x] `best_bid` / `best_ask` (three-tier bitmap `clz`/`ctz`), `qty_at`
 - [x] Fixed window with per-symbol reference price (replaced sliding ring;
-      see `docs/benchmarks.md` §6)
+      see `docs/benchmarks.md` §4)
 - [x] Tests: partial execute, partial cancel, delete-empties-level, `U`
       re-add, far-order round-trip (above/below window, execute-by-ref,
       slot reuse), window boundaries, three-tier bitmap set/clear cascade
@@ -351,7 +350,7 @@ factor, layout), not to decide whether to move off a `std::map` baseline.
 - [x] Cross-check: full 500 MB replay leaves all 7 books uncrossed with
       `not_found_ == 0`, matching an independent scan of the raw ITCH bytes
 - [x] Benchmark apply + best query (Linux, pinned) — re-run post-fix; results
-      in `docs/benchmarks.md` §5
+      in `docs/benchmarks.md`
 - [ ] Assert book empty after end-of-day `S` message (needs a full-session
       fixture; the current one ends at 09:30 ET)
 - [ ] Staleness signal: promote `not_found_` from counter to per-symbol health

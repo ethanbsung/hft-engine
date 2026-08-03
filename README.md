@@ -2,7 +2,7 @@
 
 A from-scratch low-latency market data engine: **Nasdaq TotalView-ITCH 5.0**
 decoded into a production-shaped limit order book, with latency measured
-honestly on a pinned x86 core.
+on a pinned x86 core.
 
 > **p50 123 ns / p99 426 ns** per-message dispatch + apply, over **862 057
 > applied ITCH messages** across 7 symbols, on a pinned core at 2.694 GHz.
@@ -18,11 +18,10 @@ no performance claim that isn't backed by a run.
 
 ---
 
-## The part worth reading: two bugs found by refusing to trust the numbers
+## Two bugs the benchmark found
 
-Both were found *after* the code passed its unit tests and produced
-plausible-looking latency, by sanity-checking the output instead of
-publishing it.
+Both surfaced *after* the code passed its unit tests and produced
+plausible-looking latency, during a sanity check of the replay output.
 
 **1. A p99.9 tail that was really a correctness bug.** The tail sat at
 **15 981 ns** while p50 was ~120 ns. Profiling blamed `recenter()`'s bitmap
@@ -55,10 +54,10 @@ differential fuzz checking every live entry after each of 20 000 operations.
 
 ---
 
-## Measurement discipline
+## Measurement conditions
 
-Latency numbers are only as good as the conditions they were taken under, so
-those are stated up front rather than buried:
+A latency number only means something alongside the conditions it was taken
+under:
 
 - **Measured on Linux/x86_64, never on the Mac.** Apple Silicon's `cntvct_el0`
   ticks at 24 MHz (~42 ns), so sub-42 ns work floors to zero — useless for this.
@@ -66,13 +65,13 @@ those are stated up front rather than buried:
   a Linux one.
 - **20 independent runs** (4 invocations × 5), reporting the **median of
   per-run percentiles plus the full range** — not an average of averages.
-- **862 k applied messages** — enough samples in the top 0.1% to state p99.9
-  with a straight face, and not enough to claim p99.99, so it isn't claimed.
+- **862 k applied messages** — enough samples in the top 0.1% to support p99.9,
+  and not enough for p99.99, so p99.99 isn't claimed.
 - **Timer overhead quantified and disclosed, not subtracted.**
-- **Honest about the ceiling:** a KVM guest, not tuned bare metal. No
+- **The ceiling:** a KVM guest, not tuned bare metal. No
   `isolcpus`, no hugepages, no kernel bypass. Replay, not wire-to-book.
 
-[docs/benchmarks.md](docs/benchmarks.md) §7 lists what the run does not claim.
+[docs/benchmarks.md](docs/benchmarks.md) §6 lists what the run does not claim.
 
 ---
 

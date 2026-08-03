@@ -9,7 +9,7 @@ below (per-stage timestamps through the pipeline) is **not** built; there is
 one tap, not a chain.
 
 ## Responsibility
-Measure the system's own latency **honestly**. Timestamp taps between
+Measure the system's own latency. Timestamp taps between
 stages, aggregate into distributions (not just averages), and report.
 This is what lets you say true things about performance — a latency number
 you haven't measured is a number you may not claim (see `benchmarks.md`).

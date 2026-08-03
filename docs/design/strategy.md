@@ -9,7 +9,7 @@ target: a **basic market-making** strategy — quote a bid below and an ask
 above the mid, sized within risk limits, and manage inventory. Runs on the
 hot thread as a plain function call after each book update.
 
-## Scope for Phase 1 (keep it honest and small)
+## Scope for Phase 1 (deliberately small)
 A defensible minimal market maker:
 - Compute a **fair/mid price** from top of book.
 - Quote **bid = mid − half_spread**, **ask = mid + half_spread** (in ticks).
