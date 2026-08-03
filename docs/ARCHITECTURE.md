@@ -108,7 +108,7 @@ messages-per-second goes up — but **per-message latency goes up too**.
 HFT on the critical path wants the opposite. So we do *not* put a thread
 boundary between parse → book → strategy → order.
 
-### Where threads *are* necessary (the Optiver rule)
+### Where threads *are* necessary
 
 Multithreading is necessary for work that **cannot** run on the hot
 thread without wrecking it:
