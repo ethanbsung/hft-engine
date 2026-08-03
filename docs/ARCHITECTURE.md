@@ -46,7 +46,7 @@ not a live venue.
 
 > Replay today reads the capture as **BinaryFILE** (`[u16 BE len][payload]`)
 > directly from disk. **MoldUDP64/UDP is the live multicast transport** and is
-> the target below, but it is not built — see feed-handler.md §2.
+> the target below, but it is not built — see design/feed-transport.md.
 
 **North star:** correct, measured, explicitly scoped, and architected the way
 real systems are — every claim in these docs backed by something that was run.
@@ -80,7 +80,7 @@ Two goals, both first-class:
 
 Both goals reinforce each other. Neither is sacrificed for the other.
 
-**What replay cannot measure** (see feed-handler.md §7):
+**What replay cannot measure** (see design/feed-transport.md §3):
 kernel-bypass savings (`recvmmsg` pays syscall + softirq costs a
 Solarflare/DPDK box doesn't), microburst arrival dynamics that drive
 p99.9, and anything about colocation or the physical layer.
@@ -274,7 +274,7 @@ primary feed.)*
 > help is achievable here and is actually true; a half-broken DPDK
 > integration would be neither.
 >
-> Note the boundary (feed-handler.md §7): on loopback, `recvmmsg`
+> Note the boundary (design/feed-transport.md §3): on loopback, `recvmmsg`
 > pays syscall + softirq costs that a kernel-bypass NIC eliminates — so
 > the *savings* from bypass are exactly the thing this setup cannot
 > measure. Say that, don't estimate it.

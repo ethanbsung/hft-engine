@@ -8,6 +8,7 @@ nothing here has been measured.
 
 | Doc | Component | Why it's here |
 |---|---|---|
+| [feed-transport.md](feed-transport.md) | MoldUDP64, gap detection, feed simulator | The decoder above it is built and benchmarked; the transport that carries sequence numbers is not. Split out of `../feed-handler.md`. |
 | [ring-buffer.md](ring-buffer.md) | SPSC lock-free queue | Needed only once there is more than one thread; replay is single-threaded today. |
 | [threading.md](threading.md) | Thread layout & wiring | Same — the hot/cold split has nothing to split yet. |
 | [strategy.md](strategy.md) | Market-making signal | Downstream of the book; the book came first. |

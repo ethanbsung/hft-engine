@@ -9,50 +9,51 @@ below (per-stage timestamps through the pipeline) is **not** built; there is
 one tap, not a chain.
 
 ## Responsibility
-Measure the system's own latency. Timestamp taps between
-stages, aggregate into distributions (not just averages), and report.
-This is what lets you say true things about performance — a latency number
-you haven't measured is a number you may not claim (see `benchmarks.md`).
+Measure the engine's own latency: timestamp the hot path, aggregate into
+distributions rather than averages, and report. Results and full methodology
+are in `benchmarks.md`.
 
-## What to measure
-- **Per-stage taps** on the hot path: recv → parsed → book-updated →
-  strategy-decided → order-built → (sim) fill. Store `nanos_t` timestamps
-  and diff adjacent stages.
-- **End-to-end:** recv_ts → order-out.
-- **The plumbing:** ring buffer push/pop (see design/ring-buffer.md benchmark).
+## What exists today
+One tap, around dispatch + apply — the region `benchmarks.md` reports on. It is
+gated at compile time on `template<bool Timing>`, so the untimed instantiation
+carries no counter reads at all, and writes raw cycle deltas into a
+`LatencySink` (a `std::vector<uint32_t>`, reserved up front by the benchmark so
+`record` does not allocate mid-run). Percentiles are computed off the hot path,
+after the run, in `bench/bench_latency.cpp`.
+
+## The staged design (not built)
+Once there is a pipeline to stage, the intended shape is per-stage taps —
+recv → parsed → book-updated → strategy-decided → order-built → fill — storing
+`nanos_t` timestamps and diffing adjacent stages, plus an end-to-end
+`recv_ts → order-out`, plus ring-buffer push/pop cost
+(design/ring-buffer.md). None of those stages exist yet.
 
 ### Own-code latency = later stage − `recv_ts`
-The number that actually belongs to this engine is its own pipeline latency,
-independent of the exchange and network: `now_ns()` at a later stage **minus
-`recv_ts`**. `recv_ts` is stamped in the socket reader (see feed-handler.md),
-so `(after-strategy) − recv_ts` is pure own-code time. This is the figure to
-report.
+The number that belongs to this engine is its own pipeline latency, independent
+of exchange and network: `now_ns()` at a later stage minus `recv_ts`, where
+`recv_ts` is stamped by the socket reader before decode
+(design/feed-transport.md §4).
 
-### NEVER cross-subtract `exchange_ts` and `recv_ts`
-There are three timestamps measuring three different things:
+### Never cross-subtract `exchange_ts` and `recv_ts`
+Three timestamps measure three different things:
 
 | Timestamp | Taken where | Measures |
 |---|---|---|
-| `exchange_ts` | parsed from the message `event_time` | exchange → you (network + exchange; the ms part — *not* your latency) |
-| `recv_ts` | socket reader, right after `ws.read()` | entry point of your system |
-| stage taps | after parse / book / strategy … | **your own code**, stage by stage |
+| `exchange_ts` | parsed from the ITCH message header | Nasdaq's own clock at publication — not this engine's latency |
+| `recv_ts` | socket reader, immediately after the packet arrives | entry point of this system |
+| stage taps | after parse / book / strategy … | this engine's code, stage by stage |
 
-`recv_ts` and stage taps share **one monotonic clock**
-(`platform::now_ns()`) — subtracting them is valid. **Do not** compute
-`recv_ts − exchange_ts` as a "network latency": `exchange_ts` is the
-*exchange's wall clock*, `recv_ts` is *your monotonic clock* — different,
-unsynchronized clocks. The difference is meaningless and can even go
-negative from clock skew. Honest exchange→you timing needs clock sync
-(PTP/NTP) and NIC hardware timestamping you won't have here, so treat any
-cross-clock number as unreliable-by-construction and report **own-clock
-stage deltas** instead.
+`recv_ts` and the stage taps share one monotonic clock
+(`platform::now_ns()`), so subtracting them is valid. `recv_ts − exchange_ts`
+is **not** a network latency: `exchange_ts` is the exchange's wall clock and
+`recv_ts` is a local monotonic clock — unsynchronized, and the difference can
+even go negative from skew. Genuine exchange→engine timing needs PTP sync and
+NIC hardware timestamping, neither of which is available here.
 
-**Under ITCH replay this is even more clear-cut.** `exchange_ts` is ns
-since midnight ET **on a trading day in 2020**, and `recv_ts` is stamped
-when *your simulator's* UDP packet arrives. Their difference is years, not
-microseconds. There is no exchange→you latency to measure at all: the
-number that is *yours* — decode → book → strategy, own-clock — is the only
-number, and now it's the whole number (ARCHITECTURE §2).
+Under replay the point is sharper still: `exchange_ts` is ns since midnight ET
+on a trading day in 2020, so the difference is measured in years. There is no
+exchange→engine latency to recover, which is why the only number reported is
+own-clock.
 
 ## Report distributions, not averages
 HFT cares about **tails**. Report **min / p50 / p90 / p99 / p99.9 / max**,

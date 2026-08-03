@@ -1,17 +1,20 @@
 # Module: Feed Handler (Nasdaq TotalView-ITCH 5.0)
 
 **File(s):** `include/hft/feed_handler.hpp`, `src/feed_handler.cpp`
-**Phase:** 1 · **Status:** 🟩 decode implemented — BinaryFILE length-prefixed
-framing + ITCH decode for A/F/D/C/E/X/U/P, stock directory, optional
-per-message timing tap; benchmarked, see `docs/benchmarks.md`.
-⬜ MoldUDP64 transport, sequence-gap detection, and the feed simulator (§2, §7)
-are **not** built.
+**Phase:** 1 · **Status:** 🟩 implemented — BinaryFILE length-prefixed framing +
+ITCH decode for A/F/D/C/E/X/U/P, stock directory, optional per-message timing
+tap; benchmarked, see `docs/benchmarks.md`.
+
+> **Scope.** This document covers the decoder as built: framing, field
+> extraction, and dispatch into the book. The transport beneath it — MoldUDP64,
+> sequence-gap detection, and the feed simulator — is **not built**; its design
+> lives in [design/feed-transport.md](design/feed-transport.md).
 
 ## Responsibility
-The only component that understands the wire format. Bytes → normalized
-book events, and **feed integrity**: detect sequence gaps, signal when the
-book must be discarded and recovered. Everything downstream speaks the
-normalized event, never wire bytes.
+The only component that understands the wire format. Bytes → book mutations,
+with nothing downstream ever seeing a wire byte. Feed integrity (gap detection,
+recovery signalling) belongs to this component too, but requires the transport
+layer that is not yet built.
 
 ---
 
@@ -44,38 +47,24 @@ here — is in `design-decisions.md §8`.)
 
 ---
 
-## 2. Transport: the file is BinaryFILE, not MoldUDP64
+## 2. Framing: the capture is BinaryFILE
 
-The downloaded file is Nasdaq **BinaryFILE**:
+The downloaded file is Nasdaq **BinaryFILE** — the format the decoder actually
+reads:
 
 ```
 [uint16 big-endian length][payload] [uint16 BE length][payload] ...
 ```
 
-Back to back. **No session header, no sequence numbers.** Verified: file
-opens `00 0c 53` → length `12`, type `'S'` (SystemEvent) = the spec's 12
-bytes.
+Back to back, with **no session header and no sequence numbers**. Verified: the
+file opens `00 0c 53` → length `12`, type `'S'` (SystemEvent), matching the
+spec's 12 bytes.
 
-**MoldUDP64 is the live multicast transport**, and is *not* in the file:
-
-```
-[10-byte session][uint64 sequence][uint16 message count]
-  then N × [uint16 length][payload]
-```
-
-So this is **two components**, and splitting them is the right shape:
-
-1. **Feed simulator** (separate tool, not hot path): reads BinaryFILE,
-   packs messages into MoldUDP64 packets, sends to a UDP socket (multicast
-   on loopback is fine). Real desks build exactly this for testing.
-2. **Feed handler** (hot path): `recvmmsg` → MoldUDP64 decode (sequence
-   tracking, gap detection) → ITCH decode → book.
-
-Why not just parse the file directly: **gap detection only exists at the
-Mold layer**, and gap handling is what makes it a feed handler rather than
-a file parser. You own the simulator, so you can inject gaps, reorders,
-and duplicates **on demand** — something you can never do against a live
-venue.
+`decode` walks this framing directly off an in-memory buffer. Because there are
+no sequence numbers at this layer, **gap detection is impossible here** — it
+exists only in MoldUDP64, which is why the transport layer is a separate
+component rather than a flag on this one. See
+[design/feed-transport.md](design/feed-transport.md).
 
 ---
 
@@ -159,46 +148,25 @@ the methods and the order map, replace belongs inside it.)
 
 ---
 
-## 4. Sequence-gap handling (the PnL-critical part)
-
-The sequence number lives in the **MoldUDP64 packet header**, not in ITCH
-messages. Each packet declares its first sequence number and a message
-count → next expected = `seq + count`.
-
-A gap means packets were lost. The real feed offers a **retransmit
-request** to a recovery service; the simulator can implement the same
-request/response.
-
-The handler's job is to **detect** the gap and emit a signal (e.g.
-`FeedEvent::GapDetected`) that the wiring layer routes to recovery. It does
-**not** do the recovery fetch — that's blocking I/O, cold thread
-(ARCHITECTURE §3).
-
-**Sequence numbers do NOT belong in the normalized event.** A sequence
-number is a property of the *packet*, not of an individual book update.
-One packet carries one sequence number but many messages — putting it on
-the event duplicates it across every event from that packet, a sign it's
-on the wrong object. It's a feed-integrity question answered *inside* the
-handler before any event reaches the book. Book/strategy/risk only care
-whether the book is **valid**.
-
-So: `last_sequence_num` is per-feed state in the handler (this is why the
-handler is a class, not a free function). What flows downstream on a gap is
-a **signal**, not the number.
-
----
-
-## 5. Zero-allocation
+## 4. Zero-allocation
 
 With no event struct (§1) there is no output buffer to return — the decoder
-walks the packet and calls book methods in place. Nothing to allocate on the
-message path, by construction. The shape is roughly:
+walks the buffer and calls book methods in place. Nothing to allocate on the
+message path, by construction. The signature as built:
 
 ```cpp
-// applies every message in the packet to `book`; returns messages applied
-size_t decode(std::span<const std::byte> packet, nanos_t recv_ts,
-              OrderBook& book) noexcept;
+// applies every framed message in the buffer; returns messages applied
+template<bool Timing>
+std::size_t decode(std::span<const std::byte> buffer, nanos_t recv_ts,
+                   BookSet& books, LatencySink* sink = nullptr) noexcept;
 ```
+
+Three things about that signature are deliberate. It takes a **`BookSet`**, not
+a single `OrderBook`: ITCH is one stream carrying every symbol, so dispatch by
+`stock_locate` happens inside the decoder and messages for symbols outside the
+watchlist early-out. It is **templated on `Timing`** so the instrumentation
+compiles out of production builds entirely (design-decisions.md §11). And the
+`LatencySink*` is null in the untimed instantiation, where it costs nothing.
 
 The zero-alloc discipline still has to hold **inside the book**: `add_order`
 inserts into the order-ref map and a price level, `delete_order` removes
@@ -210,29 +178,21 @@ Verify it: override `operator new` in the test binary and count. Replay the
 fixture through `decode`; the counter must not move after warm-up. That
 turns "no hot-path allocation" from an intention into a test.
 
-### `recv_ts` MUST be stamped in the reader, not the parser
+### `recv_ts` is the caller's responsibility
 
-```cpp
-recvmmsg(...);
-nanos_t recv_ts = platform::now_ns();   // reader thread, BEFORE decoding
-handler.decode(packet, recv_ts, out);
-```
+`decode` takes `recv_ts` as a parameter rather than stamping it internally.
+Stamping inside the parser would exclude decode time from any latency measured
+against it. Under the current file replay there is no reader thread, so the
+benchmarks pass a literal; once a socket reader exists it must stamp before
+calling in (design/feed-transport.md §4).
 
-If stamped inside the parser, decode time is excluded from the
-measurement — understating (cheating) your latency. The signature makes
-`recv_ts` the caller's responsibility; ensure the caller is the reader
-loop. (In tests a literal like `12345` is fine.)
-
-**Under replay, `recv_ts` measures the simulator, not an exchange.** Never
-report `recv_ts − exchange_ts` as a latency: the ITCH timestamp is ns since
-midnight ET on Nasdaq's clock, from a day in 2020.
-
-Under replay there is no network and no exchange floor, so decode +
-book-update **is** the entire measurable number — see ARCHITECTURE §2.
+`recv_ts` and the ITCH message timestamp are **not** comparable: the latter is
+ns since midnight ET on Nasdaq's clock from a day in 2020. Never subtract one
+from the other — see `latency-harness.md`.
 
 ---
 
-## 6. The data
+## 5. The data
 
 `https://emi.nasdaq.com/ITCH/Nasdaq ITCH/` — plain HTTPS, **no auth**.
 `01302020.NASDAQ_ITCH50.gz` = **5.6 GB compressed** (one trading day).
@@ -251,65 +211,29 @@ mismatches, **0** unknown types): 4.0M `A`, 3.95M `D`, 1.1M `X`, 577K `U`,
 
 ---
 
-## 7. Scope — what replay does and doesn't prove
-
-**Gives you faithfully:** the wire format exactly; L3 order-by-order book
-semantics; gap detection and recovery; zero-allocation hot path, cache
-behavior, branch layout; decode + book-update cost per message.
-
-**Cannot give you:**
-- **Kernel bypass.** Production uses Solarflare/Onload, DPDK, or FPGA that
-  never enters the kernel. `recvmmsg` on loopback pays syscall + softirq
-  costs a real box doesn't — often the largest slice of the real budget.
-- **Arrival dynamics.** Replay delivers as fast as you read. Real feeds
-  arrive in **microbursts**, exactly when queues back up and p99.9 blows
-  out. Constant-rate replay hides your worst case.
-- **Colocation / physical layer.** NIC hardware timestamping, PTP sync,
-  cross-connect length. `recv_ts` is not an exchange→you latency.
-- **Tick-to-trade.** Market data in is one half; the outbound path is the
-  other.
-- **A/B feed arbitration.** Real ITCH is two redundant multicast feeds you
-  race against each other.
-
-**What this scope supports:** a feed handler and L3 order book benchmarked in
-isolation, with kernel bypass and colocation explicitly out of scope. The
-boundary is where the measurement stops being meaningful, not where the work
-stopped.
-
-**Two cheap upgrades that close part of the gap** (both simulator-side):
-A/B arbitration (two simulator instances, independent injected drops,
-arbitrate by sequence); and **paced replay** at recorded inter-arrival
-times so microbursts are reproduced and p99.9 is real.
-
----
-
-## 8. Done checklist
+## 6. Done checklist
 
 **Decided (§1)**
 - [x] Event representation: no event struct; decoder `switch` calls book
       methods directly. `U` → single `replace_order` (§3.1). `BookDelta`
       dropped from the codebase; rationale lives in `design-decisions.md §8`.
 
-**Sequence: BinaryFILE-first, then Mold, then simulator.** Decode is pure
-logic testable against the 281 MB fixture with the histogram as oracle and
-no socket to debug. Mold framing and the simulator come only after decode is
-proven.
+**Decode was built first, deliberately.** It is pure logic — testable against a
+fixture with an independent decoder as oracle and no socket to debug. Transport
+comes after, and only once decode is proven.
 
-**ITCH (do first)**
-- [x] BinaryFILE reader: `[u16 BE len][payload]`, streamed
+**Decode**
+- [x] BinaryFILE reader: `[u16 BE len][payload]`
 - [x] ITCH decoder: explicit offsets + `bswap`, **no packed structs**;
       `switch` on type byte calling book methods (§1)
 - [x] L3 book from `A`/`F`/`E`/`C`/`X`/`D`/`U` — end-to-end fixture replay in
       `tests/test_feed_handler.cpp`, checked against an independent Python pass
       over the same bytes (293 482 framed messages; SPY book sane and uncrossed)
 - [ ] Type-histogram test vs. spec lengths (reference: 9,979,810 msgs, 0
-      mismatches over the first 295 MB) — the count was verified by hand during
-      bring-up but is not pinned by a test
+      mismatches over the first 295 MB) — verified by hand during bring-up but
+      not pinned by a test
 - [ ] Heap-allocation counter test: replay fixture, `operator new` count
-      flat after warm-up (§5)
+      flat after warm-up (§4)
 
-**Transport (after decode is proven)**
-- [ ] MoldUDP64 framing + gap detection
-- [ ] Feed simulator: BinaryFILE → MoldUDP64 → UDP, **injectable gaps /
-      reorders / duplicates**
-- [ ] (Later) A/B arbitration; paced replay
+**Transport** — tracked in
+[design/feed-transport.md](design/feed-transport.md) §5.
