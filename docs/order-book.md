@@ -97,7 +97,7 @@ it costs one bit in a struct that has padding to spare.
 — an empty free list, an unlinked list end, an empty level's `head_idx`. It
 is also what `RefIndex::find` returns for a miss. `kNoLevel` (also
 `UINT32_MAX`, but a separate named constant for intent) is what `index_of`
-returns when a price is **outside the ring window** — the far-order signal.
+returns when a price is **outside the price window** — the far-order signal.
 `kInvalidPrice` (`INT64_MIN`) is the "no such side" return from
 `best_bid`/`best_ask` on an empty book.
 
@@ -135,22 +135,16 @@ level, O(1). Deletes unlink from the middle in O(1) via `prev_idx`/
 
 **Why fixed and not a sliding ring — this design was reversed.** The book
 originally used a circular buffer whose `ring_origin_` advanced as price
-drifted, with `add_order` triggering a re-centre whenever an incoming price
-landed outside the window. That trigger was the defect: a single deep resting
-order — a standing bid well below the market — dragged the whole window onto
-itself, **evicting the near-mid book**, and the next normal add dragged it
-back. Measured over one session: **2 124 re-centres, ~14 000 resting orders
-evicted**, and an equal number of later lookups failing. It also owned the
-entire latency tail, since each re-centre ran an O(window) `rebuild_bitmap`;
-removing it took p99.9 from 15 981 ns to 590 ns (27×) on Linux/x86, with p50
-and p99 unchanged. Write-up in the README; measured effect and how the tail was
-attributed in `docs/benchmarks.md` §4–§5.
+drifted, re-centring whenever an incoming price landed outside the window. The
+trigger was the defect: one deep resting order dragged the whole window onto
+itself, evicting the near-mid book. It cost ~14 000 evicted orders and the
+entire latency tail per replay — the README has the write-up, `benchmarks.md`
+§4 the measured effect.
 
-A sliding window is legitimate where price ranges are genuinely unbounded
-(futures, FX) or memory is tight — but it must follow **the touch**, with
-hysteresis, never a single incoming order. For penny-tick equities the memory
-saved does not justify the complexity: 32 768 levels × 24 B × 2 sides is
-≈1.6 MB per symbol.
+For penny-tick equities the memory a sliding window saves does not justify the
+complexity: 32 768 levels × 24 B × 2 sides is ≈1.6 MB per symbol. The cases
+where sliding *is* the right call, and what its trigger must key off instead,
+are in `design-decisions.md` §5.
 
 **Far orders.** Orders priced outside the window still live in `pool_` +
 `ref_index_` (so `E`/`X`/`D`/`U` on them still resolve) but are **not** placed
@@ -201,15 +195,19 @@ cleared too eagerly). `tests/test_orderbook.cpp` pins both directions at every
 tier, including the "sibling still occupied in the same word" cases.
 
 ## Observability counters
-The book keeps a handful of monotone `uint64_t` counters, cheap to bump and
-meant to make invariant violations and mis-sizing *observable* rather than
-silent:
+The book keeps a handful of `uint64_t` counters, cheap to bump and meant to make
+invariant violations and mis-sizing *observable* rather than silent:
 
-| Counter | Bumped when |
-|---|---|
-| `pool_full_drops_` | `alloc_slot` fails (pool exhausted) → order dropped |
-| `far_orders_` | an add lands outside the window (net live far orders) |
-| `not_found_` | an `E`/`X`/`D`/`U` names a `ref` not in the index |
+| Counter | Kind | Bumped when |
+|---|---|---|
+| `not_found_` | monotone | an `E`/`X`/`D`/`U` names a `ref` not in the index |
+| `pool_full_drops_` | monotone | `alloc_slot` fails (pool exhausted) → order dropped |
+| `far_orders_` | **gauge** | +1 on an add outside the window, −1 when that order is torn down — so it reads *live* far orders, not a running total |
+
+Only `far_orders_` decrements; the other two are cumulative for the life of the
+book. `not_found()` and `far_orders()` are public; `pool_full_drops_` currently
+has no accessor, so the sizing signal described below is not actually readable
+from outside the class.
 
 `not_found_` is the important correctness tripwire: under a clean, in-order
 replay it should stay **zero**, and on the 500 MB fixture it does. A nonzero
@@ -234,12 +232,10 @@ Levels and the touch bitmap share a single index: `offset = price -
 base_price_`, monotonic in price and fixed for the life of the book. Highest
 set bit = highest price = best bid; lowest set bit = best ask.
 
-This is a simplification over the previous ring design, which needed *two*
-index spaces — a physical ring slot for levels and a logical offset for the
-bitmap — because the ring wrapped and physical slot order stopped matching
-price order. Those two had to be kept in agreement by hand, and a mismatch
-between them was a live source of phantom-price bugs. Removing the ring
-removed the whole category.
+That single index space is the main structural payoff of the fixed window: the
+ring design needed two (a physical ring slot for levels, a logical offset for
+the bitmap, kept in agreement by hand), and mismatches between them were a live
+source of phantom-price bugs.
 
 ## Multi-symbol
 ITCH is a **single stream carrying all ~8,000 Nasdaq symbols**, not one
