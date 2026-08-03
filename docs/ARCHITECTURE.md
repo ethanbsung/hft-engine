@@ -281,17 +281,6 @@ primary feed.)*
 
 ---
 
-## 7. Cross-cutting rules (from README, reaffirmed)
-
-- Decide data representations **before** writing structures that use them.
-- **Don't claim "lock-free" / "sub-µs" in a comment until it's measured.**
-- One module at a time, each with tests, each measured before optimizing.
-- Develop on macOS (correctness), **measure on Linux** (`build.sh perf`,
-  pinned core). Mac latency numbers are not meaningful.
-- Keep new `#ifdef`s out of the hot path — isolate in `platform.hpp`.
-
----
-
 ## 8. Module index
 
 | Module | File | Phase | Status |
