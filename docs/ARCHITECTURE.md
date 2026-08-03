@@ -182,8 +182,8 @@ The trick is the **normalized internal event** — venue-neutral:
 
 - **Feed handler** is the *only* component that knows ITCH. Swap in a CME
   MDP 3.0 handler that emits the same `Event` and the rest is unchanged.
-- **`SymbolTable`** maps `stock_locate` → `SymbolId` (see types.md); ITCH
-  hands you a dense integer id already.
+- **`BookSet`** indexes books directly by `stock_locate` (a flat array); ITCH
+  hands you a dense integer id already, so no interning step is needed.
 - **Order book / strategy / risk / latency harness** are agnostic by
   construction.
 - **Execution simulator** fills against the replayed book and implements
@@ -296,7 +296,7 @@ primary feed.)*
 
 | Module | File | Phase | Status |
 |---|---|---|---|
-| Types & SymbolTable | [types.md](types.md) | 1 | ✅ started |
+| Types | [types.md](types.md) | 1 | ✅ started |
 | Feed Handler | [feed-handler.md](feed-handler.md) | 1 | 🚧 BinaryFILE + ITCH decode (A/F/D/C/E/X/U/P) done; MoldUDP64 transport + gap detection TODO |
 | Order Book | [order-book.md](order-book.md) | 1 | ✅ apply path, queries, fixed window, 3-tier bitmap; benchmarked |
 | Latency Harness | [latency-harness.md](latency-harness.md) | 1 | 🚧 timing tap + percentile reporting in `bench/`; no staged taps yet |
