@@ -281,7 +281,7 @@ primary feed.)*
 
 ---
 
-## 8. Module index
+## 7. Module index
 
 | Module | File | Phase | Status |
 |---|---|---|---|
