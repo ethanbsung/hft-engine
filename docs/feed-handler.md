@@ -2,8 +2,10 @@
 
 **File(s):** `include/hft/feed_handler.hpp`, `src/feed_handler.cpp`
 **Phase:** 1 · **Status:** 🟩 implemented — BinaryFILE length-prefixed framing +
-ITCH decode for A/F/D/C/E/X/U/P, stock directory, optional per-message timing
-tap; benchmarked, see `docs/benchmarks.md`.
+ITCH decode for A/F/D/C/E/X/U, stock directory, optional per-message timing
+tap; benchmarked, see `docs/benchmarks.md`. (`P` is recognized by the `switch`
+but deliberately does nothing — TradeNonCross never touches the book. `C` is
+handled as `E`; see §3.2.)
 
 > **Scope.** This document covers the decoder as built: framing, field
 > extraction, and dispatch into the book. The transport beneath it — MoldUDP64,
@@ -71,12 +73,20 @@ component rather than a flag on this one. See
 ## 3. ITCH 5.0 decoding — the traps
 
 **Prices are integers with 4 implied decimals.** `198400` = `$19.8400`.
-No floats on the wire, no string→number conversion at all. Maps straight
-onto `price_t = int64_t`.
+No floats on the wire, no string→number conversion at all. The decoder
+**divides by 100 at load** (`load_be_u32(p, 32) / 100`), so `price_t` carries
+**cents** — matching the \$0.01 display tick the book's price window is built
+around. Sub-penny values truncate; see types.md.
 
 **Timestamps are 6-byte big-endian ns since midnight ET.** There is no
-`uint48`. Read 8 bytes and mask, or assemble from parts — watch for
-reading past the end on the last message in a buffer.
+`uint48`: `load_be_u48` assembles one by `memcpy`ing 6 bytes into the high end
+of a `uint64` and byte-swapping, so the load stays aligned and branch-free.
+
+The decoder does not read the timestamp on the hot path. It is a venue wall
+clock, not comparable to the engine's own monotonic clock, so no latency number
+can be derived from it (latency-harness.md) — decoding it per message would be
+pure cost. The helper exists for the point where a consumer needs it: trade
+prints, time-of-day session logic, or gap forensics.
 
 **Everything is big-endian.** x86 is little-endian, so every multi-byte
 field needs a byte swap (`__builtin_bswap16/32/64`, or `std::byteswap` in
@@ -97,7 +107,7 @@ with `memcpy` + `bswap` — the optimizer collapses it to a single `mov` +
 | `A` | AddOrder | 36 | insert order at (price, side, qty) |
 | `F` | AddOrderMPID | 40 | same as `A` + market-participant id |
 | `E` | OrderExecuted | 31 | partial fill — reduce qty at `ref` |
-| `C` | OrderExecutedWithPrice | 36 | fill at a different price |
+| `C` | OrderExecutedWithPrice | 36 | fill at a different price — **currently handled as `E`**, see below |
 | `X` | OrderCancel | 23 | partial cancel — reduce qty at `ref` |
 | `D` | OrderDelete | 19 | remove `ref` entirely |
 | `U` | OrderReplace | 35 | delete old `ref`, add **new** `ref` (§3.1) |
@@ -146,6 +156,24 @@ lookup → delete old → insert new internally — one place for the
 the book stays a dumb applier. We deleted the variant; once the book owns
 the methods and the order map, replace belongs inside it.)
 
+### 3.2 `C` is currently decoded as `E` — a known gap
+
+`case 'C'` falls through to `case 'E'` and calls `on_execute`, which reads
+executed shares at offset 19. That offset is right for both messages, so the
+**quantity** applied to the book is correct and the resting order is reduced
+properly.
+
+What is dropped is everything that makes `C` distinct: its **execution price**
+(offset 32) and its **printable flag** (offset 31). `C` means "this order
+executed at a price other than its display price," and a non-printable `C`
+(`flag == 'N'`) should not count toward trade statistics. Since the current
+book tracks resting quantity and not executed volume, ignoring both fields
+leaves the **book state** correct — but any trade-print, VWAP, or volume
+consumer built later would be wrong until `C` gets its own handler.
+
+Recorded here rather than silently: it is a real deviation from the spec, safe
+only because of what this engine does *not* yet compute.
+
 ---
 
 ## 4. Zero-allocation
@@ -155,7 +183,8 @@ walks the buffer and calls book methods in place. Nothing to allocate on the
 message path, by construction. The signature as built:
 
 ```cpp
-// applies every framed message in the buffer; returns messages applied
+// walks every framed message in the buffer; returns frames walked
+// (messages that actually mutated a book: Handler::messages())
 template<bool Timing>
 std::size_t decode(std::span<const std::byte> buffer, nanos_t recv_ts,
                    BookSet& books, LatencySink* sink = nullptr) noexcept;
@@ -167,6 +196,13 @@ a single `OrderBook`: ITCH is one stream carrying every symbol, so dispatch by
 watchlist early-out. It is **templated on `Timing`** so the instrumentation
 compiles out of production builds entirely (design-decisions.md §11). And the
 `LatencySink*` is null in the untimed instantiation, where it costs nothing.
+
+`decode` returns **framed messages walked**, not messages applied — the loop
+counts every frame it steps over, including non-watchlist symbols that early-out
+and types with no handler. The count of messages that actually mutated a book is
+a separate counter, `Handler::messages()`. `benchmarks.md` leans on exactly this
+distinction (16.3 M framed vs. 862 k applied); the comment on the declaration
+still says "returns messages applied," which is the misleading reading.
 
 The zero-alloc discipline still has to hold **inside the book**: `add_order`
 inserts into the order-ref map and a price level, `delete_order` removes
@@ -183,8 +219,10 @@ turns "no hot-path allocation" from an intention into a test.
 `decode` takes `recv_ts` as a parameter rather than stamping it internally.
 Stamping inside the parser would exclude decode time from any latency measured
 against it. Under the current file replay there is no reader thread, so the
-benchmarks pass a literal; once a socket reader exists it must stamp before
-calling in (design/feed-transport.md §4).
+benchmarks pass a literal `0` and the parameter is marked `[[maybe_unused]]` —
+**nothing reads it today.** It is a seam held open for the socket reader, which
+must stamp before calling in (design/feed-transport.md §4); until then it
+contributes nothing to any reported number.
 
 `recv_ts` and the ITCH message timestamp are **not** comparable: the latter is
 ns since midnight ET on Nasdaq's clock from a day in 2020. Never subtract one
@@ -228,7 +266,11 @@ comes after, and only once decode is proven.
       `switch` on type byte calling book methods (§1)
 - [x] L3 book from `A`/`F`/`E`/`C`/`X`/`D`/`U` — end-to-end fixture replay in
       `tests/test_feed_handler.cpp`, checked against an independent Python pass
-      over the same bytes (293 482 framed messages; SPY book sane and uncrossed)
+      over the same bytes (293 482 framed messages; SPY book sane and uncrossed).
+      Note the correctness fixture is `tests/fixtures/itch_orderflow.bin` (8 MB);
+      the benchmarks replay the larger `itch_500m.bin`, which is where the 16.3 M
+      framed-message figure in `benchmarks.md` comes from.
+- [ ] `C` decoded distinctly from `E` (execution price + printable flag, §3.2)
 - [ ] Type-histogram test vs. spec lengths (reference: 9,979,810 msgs, 0
       mismatches over the first 295 MB) — verified by hand during bring-up but
       not pinned by a test

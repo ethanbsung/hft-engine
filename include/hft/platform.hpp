@@ -45,13 +45,14 @@ namespace hft::platform {
 // the engine should use for latency measurement and timeouts.
 //
 // std::chrono::steady_clock is backed by mach_absolute_time on macOS and
-// clock_gettime(CLOCK_MONOTONIC) on Linux. It is portable, monotonic, and good
-// enough to start with. If/when you measure that its read overhead dominates
-// (typically only matters at the ns level on the hottest path), swap in a
-// TSC-based reader here behind the same signature — WITHOUT changing callers.
+// clock_gettime(CLOCK_MONOTONIC) on Linux. It is portable, monotonic, and the
+// engine's general-purpose clock: timeouts, calibration, anything not on the
+// per-message hot path.
 //
-//   TODO(perf): consider rdtsc (__builtin_readcyclecounter / __rdtsc) on
-//   x86_64 and cntvct_el0 on arm64, calibrated to ns. Only after measuring.
+// Latency measurement does NOT use it. Its read overhead (~20-30ns) is the
+// same order as the work being timed, so the harness reads the cycle counter
+// directly via read_cycles() below. now_ns() calibrates that counter in
+// cycles_per_sec().
 [[gnu::always_inline]] inline nanos_t now_ns() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
